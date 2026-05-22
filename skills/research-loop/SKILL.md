@@ -132,6 +132,8 @@ In other words: **cached invariants = sections from prior attempt that weren't t
       - Save the worker's returned output as the new `current_draft`.
       - **Mechanical Worker output gate (sanity check before invoking Critic)**: run W1–W6 in order. Any failure triggers redo (max 2 redos per turn). On final failure after 2 redos, manually annotate the deficiency in the Loop Summary and proceed (so the loop can continue and Critic can flag it).
 
+        **Gate invocation (Bash tool)**: before running W1, write `current_draft` to `/tmp/rl-draft-t{turn}.md` via Bash tool (one write per turn, reused across all W-checks). Each gate below runs: `python3 ~/.claude/skills/research-loop/gates.py <gate> /tmp/rl-draft-t{turn}.md [turn]`. Parse output: first line `PASS` → gate passes; first line `FAIL` → lines 2+ are violation details, use them verbatim in the redo prompt's `[list of offending...]` placeholder. Blacklist patterns and allowed values are maintained in `gates.py` — no need to apply them manually.
+
       **Worker redo invariant injection** (when any W check triggers redo): build a "Cached invariants from prior attempt — preserve verbatim" block by extracting from the prior Worker output:
       - Self Coverage Plan table content (Turn 1; if it existed and isn't itself the failure source)
       - Search Log rows (queries actually run)
@@ -141,33 +143,25 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       Prepend this block to the redo prompt with the standard preservation instruction (see "Turn-internal redo invariants" section above). After redo, run normalized comparison on each cached section: drift in any → another redo (counts toward max 2).
 
-        **W1 — Self Coverage Plan heading (Turn 1 only)**: verify `current_draft` contains the literal string `## Self Coverage Plan` (case-sensitive). If absent → redo with prompt: "Your previous output was rejected because it did not start with `## Self Coverage Plan`. Redo Turn 1. Your output's very first heading must be `## Self Coverage Plan` — anything else fails the orchestrator gate. Here is your previous draft for reference (you may reuse the research, but you must add the Self Coverage Plan section at the top): \n\n[paste previous current_draft]". On final failure: prepend a stub `## Self Coverage Plan\n[Worker omitted this section despite gate; Critic should flag]` and proceed.
+        **W1 — Self Coverage Plan heading (Turn 1 only)**: `gates.py w1 /tmp/rl-draft-t{turn}.md`. If `FAIL` → redo with prompt: "Your previous output was rejected because it did not start with `## Self Coverage Plan`. Redo Turn 1. Your output's very first heading must be `## Self Coverage Plan` — anything else fails the orchestrator gate. Here is your previous draft for reference (you may reuse the research, but you must add the Self Coverage Plan section at the top): \n\n[paste previous current_draft]". On final failure: prepend a stub `## Self Coverage Plan\n[Worker omitted this section despite gate; Critic should flag]` and proceed.
 
-        **W2 — Rebuttals heading (Turn 2+)**: verify `current_draft` contains a `# Rebuttals` heading (top-level, single `#`, exactly that string). If absent → redo with: "Your previous output was rejected because it did not contain a `# Rebuttals` section. Redo this turn — you must take an explicit stance (ACCEPT/CHALLENGE/PARTIAL) on every prior Critic Issue and RD. Here is your previous draft: [paste]".
+        **W2 — Rebuttals heading (Turn 2+)**: `gates.py w2 /tmp/rl-draft-t{turn}.md`. If `FAIL` → redo with: "Your previous output was rejected because it did not contain a `# Rebuttals` section. Redo this turn — you must take an explicit stance (ACCEPT/CHALLENGE/PARTIAL) on every prior Critic Issue and RD. Here is your previous draft: [paste]".
 
-        **W3 — Source URL blacklist scan (every turn)**: parse the `# Evidence Table` (markdown table) from `current_draft`. For each row, extract the `Source URL` column value(s). Flag a row as gate fail if its Source URL string matches ANY of these patterns:
-        - **Bare domain root**: regex `^https?://[^/\s]+/?$` (just `https://example.com` or `https://example.com/` with no path segment)
-        - **Grounding redirect**: contains `vertexaisearch.cloud.google.com/grounding-api-redirect/`, `google.com/url?`, `duckduckgo.com/l/?`, or `bing.com/ck/a?`
-        - **SERP URL**: contains `google.com/search?q=`, `bing.com/search?q=`, `duckduckgo.com/?q=`
-        - **"search summary" placeholder**: column literal contains "search summary", "search 综合", "多源汇总", "Gemini synthesized", "no specific URL"
+        **W3 — Source URL blacklist scan (every turn)**: `gates.py w3 /tmp/rl-draft-t{turn}.md`. Blacklist patterns (bare domain root, grounding redirects, SERP URLs, placeholder strings) and exempt labels (`[领域共识]`/`[DOMAIN]`/`[INFERENCE]`/`[推断]`) are defined in `gates.py`. Violations are returned as output lines 2+.
 
-        Exempt: rows whose label is `[领域共识]`, `[DOMAIN]`, `[INFERENCE]`, or `[推断]` (these may legitimately have no URL or use `n/a` / `derived from N,M`). Rows labeled `[事实·强]/[FACT]` or `[事实·弱]` MUST pass the blacklist.
+        If any non-exempt row hits the blacklist → redo with: "Your previous output was rejected because the following Source URLs in your Evidence Table are not valid (bare domain root, grounding redirect, SERP URL, or 'search summary' placeholder): [use lines 2+ from gates.py output verbatim]. For each, choose one: (a) replace with the actual page URL returned by WebSearch — character-for-character, no path infilling; (b) downgrade the claim to `[推断]` or `[领域共识]` with explicit scope and remove the URL; (c) if you cannot do either, drop the data point entirely (per Anti-pattern #8). Do NOT just relabel the existing URL with a different label and keep the same URL. Here is your previous draft: [paste]".
 
-        If any non-exempt row hits the blacklist → redo with: "Your previous output was rejected because the following Source URLs in your Evidence Table are not valid (bare domain root, grounding redirect, SERP URL, or 'search summary' placeholder): [list of offending row numbers + URLs + reason]. For each, choose one: (a) replace with the actual page URL returned by WebSearch — character-for-character, no path infilling; (b) downgrade the claim to `[推断]` or `[领域共识]` with explicit scope and remove the URL; (c) if you cannot do either, drop the data point entirely (per Anti-pattern #8). Do NOT just relabel the existing URL with a different label and keep the same URL. Here is your previous draft: [paste]".
+        **W4 — Rebuttals Stance per Issue/RD (Turn 2+)**: `gates.py w4 /tmp/rl-draft-t{turn}.md {turn}`. Valid stances: `## Issue [N]:` entries → `ACCEPT|CHALLENGE|PARTIAL`; `## RD [N]:` entries → `ACCEPT (...)|REJECT (...)`. Missing or invalid stance lines are returned as output lines 2+.
 
-        **W4 — Rebuttals Stance per Issue/RD (Turn 2+)**: parse the `# Rebuttals` section from `current_draft`. Locate every `## Issue [N]:` and `## RD [N]:` (or `## Research Direction RD[N]:`) sub-heading inside the Rebuttals section. For each sub-heading, the body within that sub-section must contain a line matching `Stance:` followed by one of:
-        - For `## Issue [N]:`: `ACCEPT`, `CHALLENGE`, or `PARTIAL` (any of these as a standalone token)
-        - For `## RD [N]:`: `ACCEPT` (optionally followed by mode in parentheses: `INTEGRATE`, `CHALLENGE`, `EXPAND`), or `REJECT`
+        If any sub-heading is missing the `Stance:` line OR the value doesn't match the allowed set → redo with: "Your previous output was rejected because the following Rebuttals entries are missing or malformed Stance lines: [use lines 2+ from gates.py output verbatim]. Each `## Issue [N]:` must have `- Stance: ACCEPT|CHALLENGE|PARTIAL`. Each `## RD [N]:` must have `- Stance: ACCEPT (mode)|REJECT (reason)`. Here is your previous draft: [paste]".
 
-        If any sub-heading is missing the `Stance:` line OR the value doesn't match the allowed set → redo with: "Your previous output was rejected because the following Rebuttals entries are missing or malformed Stance lines: [list of sub-headings]. Each `## Issue [N]:` must have `- Stance: ACCEPT|CHALLENGE|PARTIAL`. Each `## RD [N]:` must have `- Stance: ACCEPT (mode)|REJECT (reason)`. Here is your previous draft: [paste]".
+        **W5 — Track B engagement count (Turn 2+)**: `gates.py w5 /tmp/rl-draft-t{turn}.md {turn}`. Counts accepted RDs (ACCEPT stances) across `# Rebuttals` and `# Revision Log`, deduplicated; total must be ≥ 2.
 
-        **W5 — Track B engagement count (Turn 2+)**: parse the `# Rebuttals` section, count `## RD [N]:` (or `## Research Direction RD[N]:`) sub-headings whose `Stance:` line is `ACCEPT (...)` (i.e., engaged via INTEGRATE/CHALLENGE/EXPAND). Also count any `## Research Direction RD[N]:` headings in the `# Revision Log` section that have a non-empty `Engagement mode:` field. The unique RD count (deduplicated across both sections) MUST be ≥ 2.
+        If count < 2 → redo with: "Your previous output was rejected because you engaged with fewer than 2 Critic Research Directions (Track B requires engaging at least 2 of the prior turn's RDs via INTEGRATE/CHALLENGE/EXPAND). Detected: [count from gate output] engagement(s). Add explicit engagement entries to your `# Rebuttals` and `# Revision Log` sections for the missing RDs. Here is your previous draft: [paste]".
 
-        If count < 2 → redo with: "Your previous output was rejected because you engaged with fewer than 2 Critic Research Directions (Track B requires engaging at least 2 of the prior turn's RDs via INTEGRATE/CHALLENGE/EXPAND). Detected: [count] engagement(s). Add explicit engagement entries to your `# Rebuttals` and `# Revision Log` sections for the missing RDs. Here is your previous draft: [paste]".
+        **W6 — Self Coverage Plan sub-question count (Turn 1 only)**: `gates.py w6 /tmp/rl-draft-t{turn}.md`. SCP table data rows must be in [5, 8] inclusive.
 
-        **W6 — Self Coverage Plan sub-question count (Turn 1 only)**: parse the `## Self Coverage Plan` section's markdown table. Count data rows (excluding header `| # | 子问题 | 充分覆盖标准 |` and separator `|---|...|`). The count MUST be in [5, 8] inclusive. Worker may not skim with 1-2 sub-questions to satisfy W1, nor stuff 15+ to dilute the plan.
-
-        If count < 5 or count > 8 → redo with: "Your previous output was rejected because the `## Self Coverage Plan` table has [N] sub-questions, but the required range is 5-8. A plan with fewer than 5 sub-questions is too coarse to act as a meaningful coverage standard; more than 8 dilutes the planning function and signals lack of synthesis. Re-issue Turn 1 with exactly 5-8 specific, verifiable sub-questions. Here is your previous draft: [paste]".
+        If count < 5 or count > 8 → redo with: "Your previous output was rejected because the `## Self Coverage Plan` table has [N from gate output] sub-questions, but the required range is 5-8. A plan with fewer than 5 sub-questions is too coarse to act as a meaningful coverage standard; more than 8 dilutes the planning function and signals lack of synthesis. Re-issue Turn 1 with exactly 5-8 specific, verifiable sub-questions. Here is your previous draft: [paste]".
 
       - **Immediately extract `worker_rebuttals`** from `current_draft`: locate the `# Rebuttals` top-level section and capture its full body. If turn ≥ 2 and the section is missing (after the gate redo failed), set `worker_rebuttals = "MISSING — Worker did not produce a # Rebuttals section even after orchestrator gate redo. Critic must flag this as a critical Issue per its Worker Rebuttal Adjudication rule."` If the section exists but is empty, set `worker_rebuttals = "EMPTY — Worker explicitly accepted all prior Critic feedback. No challenges to adjudicate."` If turn = 1, `worker_rebuttals` remains null (Critic Turn 1 prompt does not include it).
 
@@ -378,45 +372,23 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       **Specific drift cases that always trigger fail (extends the core rule)**:
 
-      ### 5a — Reasoning Audit content stability
+      ### 5a — Reasoning Audit structural stability
 
-      The 4 sub-checks (Specificity / Survivorship / Inference / Internal consistency) must have stable content across redos. The previous attempt's specific findings represent Critic's actual analysis work — regenerating them with different findings means Critic redid the audit instead of preserving it.
+      Check that `# Reasoning Audit` section is present and contains all four sub-check headings (`Check 1`/`Check 2`/`Check 3`/`Check 4` lines). Do **NOT** compare exact content, quotes, or Y/N assessments across redos — Critic may legitimately refine findings when fixing an adjacent gate failure.
 
-      For each of the 4 sub-checks, compare cached vs current:
-      - **Specificity test**: the 3 chosen Claim A/B/C quotes from the Worker draft must match. Regenerating with different Claim selections (e.g., Claim B was about Ford 12.5h in cached, becomes about "电气化解放工厂布局" in current) → drift fail.
-      - **Survivorship bias**: the Y/N assessment + explanation must match. Switching Y → N or rewriting explanation → drift fail.
-      - **Inference chain completeness**: the gap-found Y/N + specific gap quote must match. Identifying a different gap (or no gap when prior found one) → drift fail.
-      - **Internal consistency**: contradiction-found Y/N + specific contradiction example must match. Identifying a different contradiction (or none when prior found one) → drift fail.
-      - The final `Reasoning Audit result: CLEAN | ISSUES FOUND` line must match.
+      Drift fail if: `# Reasoning Audit` section disappears entirely, OR the count of sub-check headings drops below 4.
 
-      **Exemption**: if Reasoning Audit itself was the gate-failure source (e.g., one of the 4 sub-checks was missing entirely), the missing sub-check may be added; the OTHER 3 sub-checks must still preserve verbatim.
+      ### 5b — URL Verification Report URL-set preservation
 
-      ### 5b — URL Verification Report row preservation
+      Check that every URL present in the cached `# URL Verification Report` still appears in the current report. Do **NOT** check that HTTP Status, Provenance, or Action fields are unchanged — Critic may legitimately update these fields when re-fetching or fixing Check 2/3/4 failures.
 
-      The URL Verification Report rows are Critic's record of fetch work performed across attempts. The redo cannot wholesale replace the URL set with a different set — that means Critic re-did the fetching from scratch instead of preserving prior verifications.
+      Drift fail if: any URL from the cached set is absent from the current attempt (URL removed or replaced with a different URL). Adding new URLs to the report is always allowed.
 
-      Build two URL sets:
-      - **Cached URL set**: URLs in the cached URL Verification Report rows
-      - **Current URL set**: URLs in the current attempt's URL Verification Report rows
+      ### 5c — Issues heading stability
 
-      Drift detection:
-      - **Removal/replacement**: if any URL in cached set is missing from current set → drift fail. Critic cannot drop previously-analyzed URLs unless they were the gate-failure source.
-      - **Per-URL row content**: for each URL appearing in both sets, the row content (HTTP Status, Provenance, Supports claim?, Action) must match cached, with one exception:
-        - Provenance may upgrade from `Worker-claimed (NOT yet Critic-verified)` to `Critic-verified Turn N` if Critic re-fetched in this redo (with corresponding HTTP Status update). All other content must match.
-      - **Adding new URLs is allowed** (e.g., Critic fetched additional URLs to corroborate prior findings).
+      Check that every `## Issue N` heading from the cached attempt is still present in the current attempt (unchanged or annotated with `Withdrawn:`). Do **NOT** check body content — Critic may update Fix Direction, refine severity wording, or expand the Problem description when addressing another gate failure.
 
-      Concrete drift example to fail: cached had `https://www.jstor.org/stable/2120991` (Devine 1983), current has `https://www.jstor.org/stable/2120731` instead. Even if both are JSTOR URLs and might point to similar content, this is replacement not preservation → drift fail.
-
-      ### 5c — Issues numbering and content stability
-
-      Issues drive Worker revision and severity tracking. Renumbering or rewriting Issues across redos breaks orchestrator's `severity_history` and Worker's revision target.
-
-      For each cached Issue (`## Issue N: title`), the same N → title pairing must appear in the current attempt:
-      - Issue numbers must be stable: cached `## Issue 1` stays `## Issue 1` in current; cannot become `## Issue 3`.
-      - Issue titles must match (modulo whitespace).
-      - Issue body fields (Where, Problem, Severity, Fix direction) must match cached.
-      - **Adding new Issues is allowed** (append `## Issue N+1`, `## Issue N+2` ...).
-      - **Removing or relabeling cached Issues is NOT allowed**. If Critic believes a cached Issue was wrong, it must remain in current attempt with an explicit `Withdrawn:` annotation rather than being deleted.
+      Drift fail if: a cached `## Issue N` heading disappears entirely without a `Withdrawn:` annotation. Adding new `## Issue N+1` headings is always allowed.
 
       ### Existing specific drift cases (preserved from prior patch)
 
