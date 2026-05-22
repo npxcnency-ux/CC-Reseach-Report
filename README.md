@@ -6,7 +6,19 @@
 
 ---
 
-**cc-research-report turns Claude Code into a research agent that checks its own work.** A worker draft gets torn apart by 4 parallel critics — coverage, reasoning, depth, search gaps — before anything ships. Every claim lands with an epistemic label: `[FACT·verified]` / `[INFERENCE]` / `[Domain Consensus]`. No silent hallucinations.
+**cc-research-report brings structural adversarial validation to Claude Code research.**
+Before searching, the worker commits to a Self Coverage Plan — 5–8 sub-questions each requiring a concrete verifier (a number, a named entity, a required comparison, a failure case, or a time anchor) — so coverage goals are locked before any evidence is gathered. A 4-track search strategy then drives the draft: mainstream consensus, counterarguments, failure cases, and unconventional angles, explicitly resisting confirmation bias. Four critics audit in parallel across independent axes — coverage integrity, reasoning quality, depth gaps, search-width — running as separate subagents with no shared context window, so they can't be anchored by the worker's narrative framing.
+
+The worker holds rebuttal rights. It takes explicit `ACCEPT` / `CHALLENGE` / `PARTIAL` stances on every critic issue; critics must steelman each challenge before overruling. The Coverage Matrix — the research contract locked in Turn 1 — is patchable but never regenerable, preventing goalpost movement. The orchestrator filters cross-turn URL state to Critic-verified entries only, blocking unverified worker-claimed sources from being treated as confirmed in subsequent turns. Severity history, redo invariants, and research directions are all orchestrator-managed — no agent can launder state into the record. Every output claim carries an epistemic label: `[FACT·verified]` / `[INFERENCE]` / `[Domain Consensus]`.
+
+| Naive multi-agent approach | cc-research-report |
+|---|---|
+| Search first, rationalize coverage later | Coverage Plan locked before first search |
+| Single agent, single pass | Worker↔4 critics, up to 10 turns |
+| Context shared between agents | Separate subagents — critics can't be anchored by worker's narrative |
+| Critic verdict is final | Worker holds rebuttal rights: ACCEPT / CHALLENGE / PARTIAL |
+| Coverage goals can shift mid-research | Coverage Matrix locked at Turn 1 — patchable, never regenerable |
+| State self-reported by agents | Orchestrator manages URL provenance, redo invariants, severity history |
 
 > 中文文档见 [README.zh.md](./README.zh.md)
 
@@ -90,12 +102,25 @@ Invoke from any Claude Code session:
 
 ### Critic roster
 
-| Agent | Role |
-|-------|------|
-| `research-critic-instruction` | Coverage Matrix, URL verification (WebFetch + Playwright), Worker Rebuttal Adjudication. **Issues the VERDICT.** |
-| `research-critic-dialectic` | Reasoning Audit: specificity, survivorship bias, inference chain, internal consistency |
-| `research-critic-depth` | Depth gap analysis, generates new Research Directions each turn |
-| `research-critic-width` | Search Log audit — flags topical tracks the worker planned but didn't execute |
+| Agent | Model | Role |
+|-------|-------|------|
+| `research-worker` | Sonnet | Drafts, searches, self-audits, rebuts critic issues |
+| `research-critic-instruction` | Opus | Coverage Matrix, URL verification (WebFetch + Playwright), Worker Rebuttal Adjudication. **Issues the VERDICT.** |
+| `research-critic-dialectic` | Opus | Reasoning Audit: specificity, survivorship bias, inference chain, internal consistency |
+| `research-critic-depth` | Opus | Depth gap analysis, generates new Research Directions each turn |
+| `research-critic-width` | Opus | Search Log audit — flags topical tracks the worker planned but didn't execute |
+| `research-html-formatter` | Opus | Renders verified markdown to design-driven HTML |
+
+To change the model for any agent, edit the `model:` line in its frontmatter (`agents/*.md`) and restart Claude Code:
+
+```yaml
+---
+name: research-worker
+model: sonnet   # change to: opus / haiku / sonnet
+---
+```
+
+Worker defaults to **Sonnet** (better URL fetch discipline, ~half the cost of Opus). Critics default to **Opus** (richer adversarial reasoning). Switching critics to Sonnet reduces cost but may weaken coverage matrix depth and reasoning audit quality.
 
 ---
 

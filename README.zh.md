@@ -6,7 +6,19 @@
 
 ---
 
-**cc-research-report 让 Claude Code 变成一个会审查自己的研究 agent。** Worker 起草，4 个 Critic 并行拆解——覆盖度、推理、深度、搜索宽度——全部通过才出报告。每条结论强制标注认知标签：`[事实·强]` / `[推断]` / `[领域共识]`。不存在悄无声息的幻觉。
+**cc-research-report 为 Claude Code 研究引入了结构性对抗验证。**
+搜索开始前，Worker 必须先提交自我覆盖计划——5-8 个各带具体可验证标准的子问题（须含数字、命名实体、比较要求、失败案例或时间锚之一）——在任何证据收集前就锁定覆盖目标。随后四轨制搜索驱动起草：主流共识、反驳论据、失败案例、非常规视角，从源头抵抗确认偏差。四个 Critic 作为独立 subagent 并行审计各自轴线，上下文完全隔离，无法被 Worker 的叙事框架先入为主地锚定。
+
+Worker 持有反驳权：对每条批评意见明确表态（接受 / 挑战 / 部分接受），Critic 必须认真回应每一项挑战，不得自动驳回。第 1 轮锁定的覆盖矩阵只能修补、不能重新生成，防止多轮迭代中移动研究目标。Orchestrator 向下一轮传递的 URL 记录仅含 Critic 亲自验证的条目，过滤 Worker 自报来源，阻止未验证 URL 在后续轮次中被当作已确认引用。严重程度历史、轮内重做不变量、研究方向均由 orchestrator 统一管理——任何 agent 都无法将未经验证的状态洗入记录。每条输出结论携带认知标签：`[事实·强]` / `[推断]` / `[领域共识]`。
+
+| 普通多 Agent 方式 | cc-research-report |
+|---|---|
+| 先搜索，事后编覆盖理由 | 搜索前先锁定覆盖计划 |
+| 单 agent 单轮，一次出结果 | Worker↔4 Critic，最多 10 轮迭代 |
+| 各 agent 共享上下文 | 独立 subagent，Critic 无法被 Worker 叙事锚定 |
+| Critic 裁决不可质疑 | Worker 持有反驳权（接受 / 挑战 / 部分接受） |
+| 研究目标可在中途改变 | 覆盖矩阵第 1 轮锁定，只能修补，不能重新生成 |
+| Agent 自报状态 | Orchestrator 统一管理 URL 来源、重做不变量、严重程度历史 |
 
 > English docs: [README.md](./README.md)
 
@@ -90,12 +102,25 @@ cd CC-Reseach-Report
 
 ### Critic 分工
 
-| Agent | 职责 |
-|-------|------|
-| `research-critic-instruction` | 覆盖矩阵、URL 验证（WebFetch + Playwright）、Worker 反驳裁定。**发出 VERDICT。** |
-| `research-critic-dialectic` | 推理审计：特异性、幸存者偏差、推断链、内部一致性 |
-| `research-critic-depth` | 深度缺口分析，每轮生成新的研究方向 |
-| `research-critic-width` | 搜索日志审计——标记 Worker 计划了但未执行的搜索轨道 |
+| Agent | 模型 | 职责 |
+|-------|------|------|
+| `research-worker` | Sonnet | 起草、搜索、自审、反驳 Critic 意见 |
+| `research-critic-instruction` | Opus | 覆盖矩阵、URL 验证（WebFetch + Playwright）、Worker 反驳裁定。**发出 VERDICT。** |
+| `research-critic-dialectic` | Opus | 推理审计：特异性、幸存者偏差、推断链、内部一致性 |
+| `research-critic-depth` | Opus | 深度缺口分析，每轮生成新的研究方向 |
+| `research-critic-width` | Opus | 搜索日志审计——标记 Worker 计划了但未执行的搜索轨道 |
+| `research-html-formatter` | Opus | 将经验证的 Markdown 渲染为设计驱动的 HTML |
+
+如需更改某个 agent 使用的模型，编辑其 frontmatter 中的 `model:` 字段（`agents/*.md`），重启 Claude Code 生效：
+
+```yaml
+---
+name: research-worker
+model: sonnet   # 可选：opus / haiku / sonnet
+---
+```
+
+Worker 默认使用 **Sonnet**（URL 抓取纪律更好，成本约为 Opus 的一半）。Critic 默认使用 **Opus**（对抗推理更深入）。将 Critic 切换为 Sonnet 可降低成本，但可能削弱覆盖矩阵深度和推理审计质量。
 
 ---
 
