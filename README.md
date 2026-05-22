@@ -1,6 +1,6 @@
 ![CC Research Report](assets/banner.png)
 
-### Research with verified sources, not confident hallucinations.
+### Experimental: multi-turn adversarial research for Claude Code
 
 [![License: MIT](https://img.shields.io/github/license/npxcnency-ux/CC-Reseach-Report)](LICENSE) [![GitHub stars](https://img.shields.io/github/stars/npxcnency-ux/CC-Reseach-Report?style=social)](https://github.com/npxcnency-ux/CC-Reseach-Report)
 

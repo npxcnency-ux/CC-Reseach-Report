@@ -1,6 +1,6 @@
 ![CC Research Report](assets/banner.png)
 
-### 有来源可查的研究，而不是自信地胡说。
+### 实验性：专为 Claude Code 构建的多轮对抗验证研究
 
 [![License: MIT](https://img.shields.io/github/license/npxcnency-ux/CC-Reseach-Report)](LICENSE) [![GitHub stars](https://img.shields.io/github/stars/npxcnency-ux/CC-Reseach-Report?style=social)](https://github.com/npxcnency-ux/CC-Reseach-Report)
 
