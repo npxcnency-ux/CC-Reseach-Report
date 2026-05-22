@@ -3,9 +3,186 @@
 This skill spans three files that are designed to evolve together:
 - `skills/research-loop/SKILL.md` (orchestrator)
 - `agents/research-worker.md` (subagent)
-- `agents/research-critic-{instruction,dialectic,depth,width}.md` (subagents)
+- `agents/research-critic-{instruction,cm,url,dialectic,depth,width}.md` (subagents)
 
 Changes here document semantic / behavioral changes — not formatting tweaks. Reverse chronological (latest first).
+
+---
+
+## 2026-05-22 — Instruction-critic split + orchestrator-computed VERDICT
+
+### Why this change
+
+Turn 1 instruction-critic 首次通过率约 0%，失败原因有三层叠加：
+1. **排序约束**：VERDICT 必须作为输出第一行（结论先于分析），但推理需要先看完整个 draft 才能给出结论，模型无法在看到输入的瞬间就给出 VERDICT。
+2. **CM 生成压力**：Turn 1 必须执行 Stage A→B→Retention Map→Final CM 四阶段 Opus 工作，同时还要做 URL 验证、Coverage Verification、Issues、RDs、VERDICT。
+3. **I/O 压力**：必须 WebFetch 所有 Evidence Table URL，这是网络 I/O 密集任务。
+
+这三项同时压在一个 Opus agent 上，~100% 失败，c.5 Check 1 redo 无法修复结构性原因（重做同样失败），Coverage Matrix 缺失破坏所有后续轮次的验证基准。
+
+### What changed
+
+**`agents/research-critic-cm.md`（新建，Opus）**：Turn 1 only。专职生成 Coverage Matrix（Stage A→B→Retention Map→Final CM），完全不做 VERDICT/Issues/URL 验证。移除了指令-验证交织的认知压力。
+
+**`agents/research-critic-url.md`（新建，Sonnet）**：每轮。专职 URL 验证（WebFetch/Playwright + URL Verification Report），完全不做 VERDICT/CM/Issues。URL 验证是 I/O 密集但推理轻量任务，Sonnet 成本约为 Opus 一半。
+
+**`agents/research-critic-instruction.md`（修改）**：
+- 移除：VERDICT 首行输出约束（Orders constraint 根本消除）
+- 移除：Coverage Matrix 生成（移至 critic-cm）
+- 移除：URL WebFetch + URL Verification Report（移至 critic-url）
+- 新增：输入说明段（接收 pre-CM + pre-URL-report）
+- 新增：Advisory VERDICT 在末尾（非 binding，仅供调试对比）
+- 保留：Coverage Verification（使用 pre-provided CM）、Issues（I-prefix）、DQs、RDs、Worker Rebuttal Adjudication
+
+**`skills/research-loop/SKILL.md`（修改）**：
+- 步骤 c 重组为 Phase A（并行）+ Phase B（串行）：
+  - Turn 1 Phase A：5 个并行 agents（critic-cm + critic-url + dialectic + depth + width）
+  - Turn 2+ Phase A：4 个并行 agents（critic-url + dialectic + depth + width）
+  - Phase B：instruction-critic（串行，接收 cm_output + url_output）
+- 步骤 c.5 新增 CM gate（Turn 1，Phase B 前）和 URL gate（每轮，Phase B 前）；Checks 2/3/4 从 Phase B gate 移入 URL gate
+- 步骤 d：orchestrator 机械计算 VERDICT（`critical>0 → FAIL; major==0 AND cm_missing==0 → PASS; else REVISE`），不再依赖 LLM 输出首行
+- 步骤 e：`coverage_matrix` 从 `cm_output`（不再从 instruction_output）提取；`prev_url_verified_critic_only` 从 `url_output` 提取
+
+### Design notes
+
+Opus 用于 critic-cm（Coverage Matrix 质量问题会传染所有后续轮次，必须保质）；Sonnet 用于 critic-url（URL 验证是 I/O 密集但推理轻量任务）。Advisory VERDICT 保留在 instruction-critic 末尾供调试对比——可以用来监测 orchestrator 计算 vs LLM 直觉的分歧。orchestrator-computed VERDICT 的核心逻辑：Issues severity + Coverage Verification MISSING 行数，不需要任何 LLM 的"裁决直觉"。
+
+### Validation results (2026-05-22, topic: "AI对知识工作者的影响", max_turns=1)
+
+| 验证项 | 结果 |
+|--------|------|
+| research-critic-cm 首次产出有效 CM | ✅ Stage A=12 ≥10 / Stage B=12 匹配 / Retention=7 / Final CM=8行 |
+| CM gate（Phase B 前）| ✅ PASS，无 redo |
+| research-critic-url 首次产出有效 URL 报告 | ✅ 7个URLs WebFetched，6全匹配，1 partial（Goldman Sachs 数字在落地页缺失）|
+| URL gate（Phase B 前）| ✅ PASS，无 redo |
+| instruction-critic 首次通过 | ✅ **无 redo**（Turn 1 ~100% 失败率降为 0%）|
+| Phase B Check 1 | ✅ PASS，无 redo |
+| Orchestrator VERDICT 计算 | `FAIL (critical=6, major=10, cm_missing=1)` |
+| Advisory VERDICT（instruction-critic）| `REVISE` |
+| VERDICT 分歧（orchestrator vs Advisory）| orchestrator=FAIL / advisory=REVISE：差异来自 critical Issues（D-1/D-2/E-1/E-2/W-1/I-1），advisory 低估了 critical 严重性 |
+
+instruction-critic 输出首次通过的三个机制各自独立生效：
+1. **排序约束消除**：instruction-critic 不再被要求在推理前写 VERDICT，输出顺序自然（Coverage Verification → Issues → RDs → Advisory VERDICT at end）
+2. **CM 生成压力移除**：CM 已由 critic-cm 在 Phase A 完成，instruction-critic 直接使用 pre-generated CM 做 Coverage Verification
+3. **URL I/O 压力移除**：URL 验证已由 critic-url 在 Phase A 完成，instruction-critic 直接使用 pre-verified URL report 做 Issues 标注
+
+VERDICT=FAIL 为内容质量问题（经验层级与绩效层级混淆、Goldman Sachs 数字未降级等），非架构问题。Loop 因 max_turns=1 正常结束。
+
+
+
+### Why this change
+
+W1 gate 在 Turn 1 首次通过率约 0%：Worker 被要求同时完成"规划 SCP + 搜索 + 写答案"，模型在认知负载峰值时刻完全跳过 SCP，直接进入答案模式。每次 Turn 1 必然产生 ~10k token 的 redo 浪费。根本原因不是格式纪律，而是单次调用中并发认知需求排挤了格式要求。
+
+### What changed
+
+**`skills/research-loop/SKILL.md`**：Turn 1 Worker 调用从单次改为两阶段：
+
+- **Phase 1（SCP-only）**：Worker 只输出 `## Self Coverage Plan` 表格，不搜索，不写答案。W1/W6 gate 在 Phase 1 输出上运行。认知负载接近零，首次通过率预期 ~95%+。
+- **Phase 2（Full research）**：Worker 收到 Phase 1 验证过的 `pre_scp` 作为预填 SCP，输出开头直接包含 SCP 表格，然后执行搜索和完整答案。
+
+Phase 1 redo 比当前 Turn 1 redo 便宜约 20x（无搜索，输出只有表格）。主 gates 段落中 W1/W6 在 Turn 1 时 trivially PASS（已在 Phase 1 验证）并加注说明。Turn 2+ 流程完全不变。
+
+### Design notes
+
+不引入新 agent 类型——Phase 1 使用同一个 research-worker（Sonnet），避免 Haiku 规划质量低、Coverage Matrix 降级的风险。两阶段分离了"规划"和"研究"的认知负载，是当前架构下消除 W1 redo 循环的最小侵入性方案。
+
+---
+
+## 2026-05-22 — gates.py: Python gate execution + 5a/5b/5c drift simplification + INTEGRATE search discipline
+
+### Why this change
+
+Three unrelated but structurally related failure modes accumulated:
+
+1. **W1–W6 gates were LLM-simulated regex.** The orchestrator described each gate as natural-language regex for Claude to evaluate at runtime. LLMs do not reliably simulate regex — subtle output format variations (case, whitespace, extra preamble) caused gates to misfire or be bypassed. One character of prefix before `## Self Coverage Plan` would pass a lenient Claude regex while failing the spec.
+
+2. **5a/5b/5c drift detection produced false-positive redos.** The three within-turn Critic invariant checks compared field-level content (Reasoning Audit claim quotes, URL row HTTP Status/Action fields, Issue body text). Any Critic revision that legitimately updated a field (e.g., re-fetched URL with updated status) triggered drift fail even when the research substance was correct. High false-positive rate → excessive redo cost with no quality benefit.
+
+3. **INTEGRATE mode had a "no new search required" escape hatch.** The Revision Log template's `Additional search:` field allowed `"no new search required"` for any mode including INTEGRATE. This directly contradicted Track B's mandate (INTEGRATE must independently fetch and verify Critic's claimed specifics). Workers could integrate Critic training-memory claims as evidence without running a single WebSearch.
+
+### What changed
+
+**`skills/research-loop/gates.py` (new file)**
+
+Python CLI replacing LLM-simulated regex for W1–W6. Deterministic execution via Bash tool:
+
+```bash
+python3 ~/.claude/skills/research-loop/gates.py <gate> <draft_file> [turn]
+# first line: PASS or FAIL; FAIL followed by violation lines
+python3 ~/.claude/skills/research-loop/gates.py coverage-matrix-drift <prior_file> <current_file>
+```
+
+| Gate | Logic | Key detail |
+|------|-------|------------|
+| w1 | `'## Self Coverage Plan' in draft` | Case-sensitive literal |
+| w2 | `re.search(r'^# Rebuttals\s*$', draft, re.MULTILINE)` | Single `#`, exact string |
+| w3 | Parse Evidence Table; check non-exempt rows against 4 blacklist types | Exempt: `[领域共识]` `[DOMAIN]` `[INFERENCE]` `[推断]` |
+| w4 | Parse `# Rebuttals` sub-headings; require `Stance:` with valid value per type | Issue: ACCEPT/CHALLENGE/PARTIAL; RD: ACCEPT/REJECT |
+| w5 | Count ACCEPT RDs in Rebuttals + Revision Log; need ≥ 2 | Deduplicates across sections |
+| w6 | Count SCP table data rows; need [5, 8] | Skip header + separator rows |
+| coverage-matrix-drift | Cell-value comparison of Coverage Matrix between two files | Adding rows = PASS; changing cell value = FAIL |
+
+W3 blacklist patterns (source of truth in `gates.py` — not in SKILL.md prose):
+- Bare domain: `^https?://[^/\s]+/?$`
+- Grounding redirects: `vertexaisearch.cloud.google.com/grounding-api-redirect/`, `google.com/url?`, `duckduckgo.com/l/?`, `bing.com/ck/a?`
+- SERP: `google.com/search?q=`, `bing.com/search?q=`, `duckduckgo.com/?q=`
+- Placeholders: `search summary`, `search 综合`, `多源汇总`, `Gemini synthesized`, `no specific URL`
+
+`check_coverage_matrix_drift` uses `_parse_table_cells()` which strips all `|` formatting and returns raw cell values — immune to column alignment, trailing spaces, or markdown padding changes that previously caused false positives on the "normalized string comparison" check.
+
+**`skills/research-loop/SKILL.md` — W1–W6 invocation changed to Bash**
+
+Gates now invoked via `python3 ~/.claude/skills/research-loop/gates.py` instead of LLM evaluation. Each gate: write current_draft to `/tmp/rl-draft-t{turn}.md` (one Write per turn, reused across W1–W6), call gates.py, parse first-line PASS/FAIL. Redo prompt text preserved verbatim.
+
+Coverage Matrix drift check changed from "normalized string comparison" to:
+```bash
+python3 ~/.claude/skills/research-loop/gates.py coverage-matrix-drift /tmp/prior.md /tmp/current.md
+```
+
+**`skills/research-loop/SKILL.md` — 5a/5b/5c drift detection simplified**
+
+| Check | Before | After |
+|-------|--------|-------|
+| 5a Reasoning Audit | Compare 4 sub-check content verbatim (claim quotes, Y/N text) | Only verify 4 sub-check headings present; no content comparison |
+| 5b URL Verification | Per-row HTTP Status / Provenance / Action match | URL set membership only (prior URLs still present) |
+| 5c Issues | Issue body fields match (problem text, fix direction) | Issue heading presence only (`## Issue N:` title still appears or `Withdrawn:`) |
+
+**`agents/research-worker.md` — Revision Log INTEGRATE/EXPAND mandatory search**
+
+`Additional search:` field in Revision Log template changed from:
+
+> `[query if new search was needed, or "no new search required"]`
+
+To:
+
+> `(INTEGRATE/EXPAND) actual query string — required; (CHALLENGE only) "used existing evidence" allowed if no new search needed`
+
+`Finding:` field updated to match: `(CHALLENGE only) cite the existing evidence used`.
+
+### Design notes
+
+**Why Python and not a shell one-liner**: W3 requires parsing a markdown table, checking multiple regex patterns per cell, and exempting rows by label. Shell scripts for this level of logic are fragile and hard to maintain. Python gives clean testability: `python3 gates.py w3 test_draft.md` can be run standalone against any fixture.
+
+**Why 5a/5b/5c loosening does not weaken invariant protection**: The invariants that matter for cross-turn state consistency are structural (Coverage Matrix sub-question text, Issue titles, RD identifiers) — not field-level content (which a Critic may legitimately update after new evidence). The previous content-match checks were catching legitimate Critic updates as drift. Simplifying to structural presence catches the actual failure mode (Critic regenerates different sub-questions or different Issue titles) without penalizing legitimate field updates.
+
+**Why INTEGRATE requires a search but CHALLENGE does not**: INTEGRATE means adopting Critic's claimed specifics (typically training-memory numbers like "GPM 41% in 2024"). These need independent verification before entering evidence. CHALLENGE means disputing a Critic claim using Worker's own search results — the search was already done. Requiring a search for CHALLENGE would force Workers to re-search what they already searched, burning tokens.
+
+### How to verify
+
+```bash
+# W1 gate: should FAIL on missing SCP
+echo "# Answer\nsome text" | python3 skills/research-loop/gates.py w1 /dev/stdin
+# FAIL / Missing `## Self Coverage Plan` heading
+
+# W3 gate: should FAIL on bare domain
+python3 skills/research-loop/gates.py w3 <file-with-bare-domain-url>
+# FAIL / Row N: bare domain root — https://example.com/
+
+# coverage-matrix-drift: should FAIL on changed sub-question text
+python3 skills/research-loop/gates.py coverage-matrix-drift prior.md current.md
+# FAIL / Row C2 / 子问题: prior="what X" → current="what Y"
+```
 
 ---
 

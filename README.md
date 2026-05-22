@@ -9,7 +9,7 @@
 **cc-research-report brings structural adversarial validation to Claude Code research.**
 Before searching, the worker commits to a Self Coverage Plan — 5–8 sub-questions each requiring a concrete verifier (a number, a named entity, a required comparison, a failure case, or a time anchor) — so coverage goals are locked before any evidence is gathered. A 4-track search strategy then drives the draft: mainstream consensus, counterarguments, failure cases, and unconventional angles, explicitly resisting confirmation bias. Four critics audit in parallel across independent axes — coverage integrity, reasoning quality, depth gaps, search-width — running as separate subagents with no shared context window, so they can't be anchored by the worker's narrative framing.
 
-The worker holds rebuttal rights. It takes explicit `ACCEPT` / `CHALLENGE` / `PARTIAL` stances on every critic issue; critics must steelman each challenge before overruling. The Coverage Matrix — the research contract locked in Turn 1 — is patchable but never regenerable, preventing goalpost movement. The orchestrator filters cross-turn URL state to Critic-verified entries only, blocking unverified worker-claimed sources from being treated as confirmed in subsequent turns. Severity history, redo invariants, and research directions are all orchestrator-managed — no agent can launder state into the record. Every output claim carries an epistemic label: `[FACT·verified]` / `[INFERENCE]` / `[Domain Consensus]`.
+The worker holds rebuttal rights. It takes explicit `ACCEPT` / `CHALLENGE` / `PARTIAL` stances on every critic issue; critics must steelman each challenge before overruling. The Coverage Matrix — the research contract locked in Turn 1 — is patchable but never regenerable, preventing goalpost movement. The orchestrator filters cross-turn URL state to Critic-verified entries only, blocking unverified worker-claimed sources from being treated as confirmed in subsequent turns. Severity history, redo invariants, and research directions are all orchestrator-managed — no agent can launder state into the record. Turn 1 runs five critics in Phase A (parallel: coverage-matrix, url-verify, reasoning, depth, width) followed by a sequential Phase B (instruction-critic, which receives the pre-built coverage matrix and pre-verified URL report). The VERDICT is computed mechanically by the orchestrator from issue severity counts — not by any LLM. Every output claim carries an epistemic label: `[FACT·verified]` / `[INFERENCE]` / `[Domain Consensus]`.
 
 | Naive multi-agent approach | cc-research-report |
 |---|---|
@@ -79,11 +79,16 @@ Invoke from any Claude Code session:
   │    Turn 1: commits to Self Coverage Plan (5–8 sub-questions) before searching
   │    Turn 2+: rebuts every critic issue (ACCEPT / CHALLENGE / PARTIAL)
   │
-  └─ 4 Critics in parallel (every turn):
-       instruction  →  coverage matrix + URL verification + VERDICT
-       dialectic    →  reasoning audit (specificity, bias, inference chain, consistency)
-       depth        →  depth gaps + new research directions
-       width        →  search log audit (uncovered tracks)
+  └─ Phase A — parallel critics (Turn 1: 5 agents; Turn 2+: 4 agents):
+       critic-cm       →  Coverage Matrix (Turn 1 only)
+       critic-url      →  URL verification via WebFetch (every turn)
+       dialectic       →  reasoning audit (specificity, bias, inference chain, consistency)
+       depth           →  depth gaps + new research directions
+       width           →  search log audit (uncovered tracks)
+     Phase B — sequential (after Phase A gates pass):
+       instruction     →  Coverage Verification + Issues + RDs + Advisory VERDICT
+        ↓
+  Orchestrator computes binding VERDICT from issue severity counts
         ↓
   Repeat until VERDICT: PASS or max_turns reached
         ↓
@@ -96,20 +101,28 @@ Invoke from any Claude Code session:
 
 ### The two load-bearing principles
 
-1. **Adversarial validation, not self-review.** The worker never critiques its own work. Four critics each own a narrow audit axis — coverage, reasoning, depth, search-width. No single agent tries to do everything.
+The core pathology of single-pass LLM research is twofold: **self-review blindness** (the author can't spot gaps in their own framing) and **rationalization under questioning** (when challenged, the LLM argues for its prior answer rather than updating). These two failure modes compound: a model that can't see its own blind spots will, when critiqued, defend them fluently.
 
-2. **Mechanical gates over prompt instructions.** LLMs reliably skip structural requirements when asked nicely. Every critical invariant — Self Coverage Plan heading, Rebuttal stances, source URL format — has an orchestrator-level gate that forces a redo on failure. The [CHANGELOG](CHANGELOG.md) documents 20+ patches all following the same pattern: *prompt failed → add a gate*.
+The two principles below address each pathology with a structural fix — not a prompt instruction.
+
+1. **Adversarial validation, not self-review.** The worker never critiques its own work. Four critics each own a narrow audit axis — coverage, reasoning, depth, search-width. No single agent tries to do everything. *Addresses: self-review blindness.*
+
+2. **Mechanical gates over prompt instructions.** LLMs reliably skip structural requirements when asked nicely. Every critical invariant — Self Coverage Plan heading, Rebuttal stances, source URL format — has an orchestrator-level gate that forces a redo on failure. The [CHANGELOG](CHANGELOG.md) documents 20+ patches all following the same pattern: *prompt failed → add a gate*. *Addresses: rationalization under questioning — math can't be argued with.*
 
 ### Critic roster
 
 | Agent | Model | Role |
 |-------|-------|------|
 | `research-worker` | Sonnet | Drafts, searches, self-audits, rebuts critic issues |
-| `research-critic-instruction` | Opus | Coverage Matrix, URL verification (WebFetch + Playwright), Worker Rebuttal Adjudication. **Issues the VERDICT.** |
+| `research-critic-cm` | Opus | Coverage Matrix (Turn 1 only, Phase A): Stage A brainstorm ≥10 → Stage B critique → Retention Map → Final CM |
+| `research-critic-url` | Sonnet | URL verification every turn (Phase A): WebFetch/Playwright all Evidence Table URLs → `# Critic WebFetch Audit` + `# URL Verification Report` |
+| `research-critic-instruction` | Opus | Coverage Verification, Issues (I-prefix), Deepening Questions, Research Directions, Worker Rebuttal Adjudication. Issues **Advisory VERDICT** (non-binding, for debugging). Runs in Phase B. |
 | `research-critic-dialectic` | Opus | Reasoning Audit: specificity, survivorship bias, inference chain, internal consistency |
 | `research-critic-depth` | Opus | Depth gap analysis, generates new Research Directions each turn |
 | `research-critic-width` | Opus | Search Log audit — flags topical tracks the worker planned but didn't execute |
 | `research-html-formatter` | Opus | Renders verified markdown to design-driven HTML |
+
+The binding VERDICT is computed by the orchestrator from issue severity counts (`critical > 0 → FAIL; major == 0 AND cm_missing == 0 → PASS; else REVISE`) — not issued by any agent.
 
 To change the model for any agent, edit the `model:` line in its frontmatter (`agents/*.md`) and restart Claude Code:
 
@@ -179,10 +192,13 @@ cc-research-report/
 │   ├── research-report/
 │   │   └── SKILL.md              # pipeline orchestrator (Step 0→1→2)
 │   └── research-loop/
-│       └── SKILL.md              # worker↔critic loop, all mechanical gates
+│       ├── SKILL.md              # worker↔critic loop, all mechanical gates
+│       └── gates.py              # W1–W6 + CM gate + URL gate validation logic
 ├── agents/
 │   ├── research-worker.md
-│   ├── research-critic-instruction.md
+│   ├── research-critic-cm.md           # Phase A, Turn 1 only
+│   ├── research-critic-url.md          # Phase A, every turn
+│   ├── research-critic-instruction.md  # Phase B, sequential
 │   ├── research-critic-dialectic.md
 │   ├── research-critic-depth.md
 │   ├── research-critic-width.md

@@ -244,8 +244,8 @@ Rules:
   - INTEGRATE: [where and how Critic's contribution was incorporated; which section, what label applied]
   - CHALLENGE: [your counterargument and supporting evidence — must be specific, not "I disagree"]
   - EXPAND: [what new research findings you added on top of Critic's draft]
-- Additional search: [query if new search was needed, or "no new search required"]
-- Finding: [key result, or "Critic's contribution sufficient, no additional search needed"]
+- Additional search: (INTEGRATE/EXPAND) actual query string — required; (CHALLENGE only) "used existing evidence" allowed if no new search needed
+- Finding: [key result, or for CHALLENGE: cite the existing evidence used]
 
 ## Research Direction RD2: [title]
 - ...

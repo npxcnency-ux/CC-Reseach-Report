@@ -20,20 +20,27 @@ Do not fall back to executing the research directly. That defeats the loop's ent
 ## Loop specification
 
 ```
-# Main loop (no Turn 0 — Coverage Matrix is generated inside Critic Turn 1)
+# Main loop
 MAX_TURNS = 10
 for turn in 1..MAX_TURNS:
-    # Step 1: invoke worker (receives coverage_matrix on Turn 2+ once it exists)
+    # Step 1: invoke worker (Turn 1: two-phase SCP+research; Turn 2+: single call with feedback)
     worker_input = { task, previous_draft?, critic_feedback?, coverage_matrix? }
     current_draft = call Worker(worker_input)
 
-    # Step 2: invoke critic (receives coverage_matrix on Turn 2+ to avoid regenerating)
-    critic_output = call Critic(task, current_draft, prev_url_verified?, coverage_matrix?)
+    # Step 2a: Phase A — parallel critics
+    #   Turn 1: [critic-cm, critic-url, critic-dialectic, critic-depth, critic-width]
+    #   Turn 2+: [critic-url, critic-dialectic, critic-depth, critic-width]
+    # Step 2b: Phase B — sequential (after Phase A gates pass)
+    #   instruction-critic (receives cm_output + url_output from Phase A)
+    critic_output = merge(cm_output?, url_output, dialectic, depth, width, instruction)
 
-    # Step 3: parse verdict
-    verdict = first_line_of(critic_output)
-    if verdict == "VERDICT: PASS": break
-    if verdict == "VERDICT: FAIL": break
+    # Step 3: orchestrator computes VERDICT from Issues + Coverage Verification
+    #   critical_count > 0 → FAIL
+    #   major_count == 0 AND cm_missing == 0 → PASS
+    #   else → REVISE
+    verdict = compute_verdict(critic_output)
+    if verdict == "PASS": break
+    if verdict == "FAIL": break
     # else REVISE: save feedback, continue
     critic_feedback = critic_output
 ```
@@ -55,13 +62,19 @@ When step b or step c.5 triggers a redo, the redo prompt must carry forward all 
 - `# Evidence Table` rows whose Source URL passed W3 (only blacklist-hit URLs may change; other rows stay)
 - `# Rebuttals` sub-headings + valid Stance lines (Turn 2+; only invalid stances and missing entries need fixing)
 
-**Critic invariants** (carried from prior Critic attempt → next Critic attempt within same turn):
-- `# Coverage Matrix` table (Turn 1 only — locked once generated; downstream turns depend on this exact text)
+**Critic invariants** (separate invariant cache per specialized critic):
+
+*cm_output invariants* (Turn 1 only — `research-critic-cm` redos):
+- Full `# Coverage Matrix` content (Stage A/B/Retention Map/Final CM) — locked once generated
+
+*url_output invariants* (`research-critic-url` redos):
+- `# Critic WebFetch Audit` rows for URLs already fetched in prior attempt this turn (status, content support — don't re-fetch unless claim text changed)
+- `# URL Verification Report` rows for URLs already analyzed (status, supports-claim assessment, action)
+
+*instruction_output invariants* (`research-critic-instruction` redos):
 - `# Reasoning Audit` sub-check assessments (Y/N + quote/example for each of 4 checks)
 - `# Issues` (titles, where-quote, problem, severity, fix direction)
 - `# Research Directions` (titles, Critic's contribution body, Worker's task)
-- `# Critic WebFetch Audit` rows for URLs Critic personally fetched in any prior attempt this turn (status, content support — don't re-fetch unless claim text changed)
-- `# URL Verification Report` rows for URLs already analyzed (status, supports-claim assessment, action)
 - `# Worker Rebuttal Adjudication` rulings already issued (Turn 2+)
 
 ### Mechanical preservation procedure
@@ -93,40 +106,72 @@ In other words: **cached invariants = sections from prior attempt that weren't t
    a. Increment `turn`.
 
    b. **Invoke worker**: call the Agent tool with `subagent_type="research-worker"`.
-      - On turn 1, prompt = the user's research task + a section that **literally injects an empty Self Coverage Plan template** as the very start of the worker's required output. Use this exact wrapper text (with `{user_research_task}` substituted):
+
+      **Turn 1: two-phase invocation (Phase 1 then Phase 2 — sequential, not parallel)**
+
+      **Phase 1 — SCP-only call**: Invoke Worker with this prompt (substitute `{user_research_task}`):
 
         ```
         Research task: {user_research_task}
 
         ---
 
-        ## STRICT OUTPUT START — fill in the template below verbatim
+        Your ONLY task for this call is to generate the ## Self Coverage Plan table.
+        Do NOT run any WebSearch. Do NOT write an answer. Stop immediately after the table.
 
-        Your response MUST begin with the following heading and table structure as the very first characters. Do NOT write any preamble, acknowledgment, or commentary before this heading — not "Acknowledged", not "I'll begin by", not a single word. The orchestrator runs a literal regex match `^## Self Coverage Plan\n` on the first non-whitespace line of your output. Any text before this heading triggers W1 gate failure and forces a full Turn 1 redo.
-
-        Fill in the `[...]` placeholders with your own sub-questions BEFORE running any WebSearch — the plan drives the search, not the other way around. Sub-questions must be specific to this research task (if you can swap the topic and the sub-question still applies, it is too generic — replace it). Adequacy criteria must include at least one of: a specific number, a named entity, a required comparison, a required failure-case, or a time-anchor.
-
-        Begin your response by completing exactly this template:
+        Output EXACTLY this structure and nothing else:
 
         ## Self Coverage Plan
 
         | # | 子问题 | 充分覆盖标准 |
         |---|--------|--------------|
-        | C1 | [specific sub-question 1] | [adequacy criterion with verifier] |
-        | C2 | [specific sub-question 2] | [adequacy criterion with verifier] |
-        | C3 | [specific sub-question 3] | [adequacy criterion with verifier] |
-        | C4 | [specific sub-question 4] | [adequacy criterion with verifier] |
-        | C5 | [specific sub-question 5] | [adequacy criterion with verifier] |
+        | C1 | [specific sub-question] | [adequacy criterion with verifier] |
+        | C2 | [specific sub-question] | [adequacy criterion with verifier] |
+        | C3 | [specific sub-question] | [adequacy criterion with verifier] |
+        | C4 | [specific sub-question] | [adequacy criterion with verifier] |
+        | C5 | [specific sub-question] | [adequacy criterion with verifier] |
 
         (rows C6, C7, C8 optional — total row count must be in [5, 8])
 
-        After completing the SCP table, continue with `# Search Log`, `# Answer`, `# Evidence Table`, `# Source Contradictions`, `# What I Don't Know`, `# Assumptions Made` per your standard Turn 1 output format.
+        Rules:
+        - Sub-questions must be specific to THIS research task (not generic enough to apply to any topic)
+        - Each adequacy criterion must include at least one of: a specific number, a named entity, a required comparison, a required failure-case, or a time-anchor
+        - Do NOT write any preamble, explanation, or post-amble — the table is your entire output
+        ```
+
+      Save Phase 1 output as `scp_draft`. Write to `/tmp/rl-scp-t1.md` via Bash, then run Phase 1 gates:
+      - `python3 ~/.claude/skills/research-loop/gates.py w1 /tmp/rl-scp-t1.md` → PASS or redo
+      - `python3 ~/.claude/skills/research-loop/gates.py w6 /tmp/rl-scp-t1.md` → PASS or redo
+
+      Phase 1 redo (max 2): no invariants to preserve (entire table regenerates).
+      - W1 FAIL → redo: "Your output must begin with `## Self Coverage Plan`. Output only the SCP table, nothing else. Here is your previous attempt: [paste scp_draft]"
+      - W6 FAIL → redo: "Your SCP table has [N from gate output] rows; required range is [5, 8]. Output only the SCP table with the correct number of rows. Here is your previous attempt: [paste scp_draft]"
+      - After 2 failed redos: use stub `## Self Coverage Plan\n[W1/W6 failed on SCP planner after 2 redos; Critic should flag]` and proceed.
+
+      Extract `pre_scp`: the complete `## Self Coverage Plan` section (heading + table) from the passing `scp_draft`.
+
+      **Phase 2 — Full research call**: Invoke Worker with this prompt (substitute `{user_research_task}` and `{pre_scp}`):
+
+        ```
+        Research task: {user_research_task}
+
+        ---
+
+        ## Pre-approved Self Coverage Plan (orchestrator-validated — copy this verbatim as the first section of your output, then continue)
+
+        {pre_scp}
+
+        ---
+
+        Continue with `# Search Log`, `# Answer`, `# Evidence Table`, `# Source Contradictions`, `# What I Don't Know`, `# Assumptions Made` per your standard Turn 1 output format.
+
+        Your output must begin with the ## Self Coverage Plan section above (verbatim), followed immediately by # Search Log.
 
         **HARD GATE reminders (orchestrator-enforced)**:
-        - W1: first heading must be exactly `## Self Coverage Plan` — no preamble.
-        - W6: SCP table data rows must be in [5, 8].
         - W3: every FACT-labeled Evidence Table row must have a fetchable `https://` URL with a page path.
         ```
+
+      Save Phase 2 output as the new `current_draft`.
 
       - On turn > 1, prompt = the user's research task + a section "## Previous draft" containing `current_draft` + a section "## Critic feedback to address" containing `critic_feedback` + (if `coverage_matrix` is not null) a section "## Coverage Matrix (items still MISSING or PARTIAL must be addressed)" containing `coverage_matrix` + the instruction: "**HARD GATE**: your output MUST contain a top-level `# Rebuttals` section that explicitly takes a stance (ACCEPT / CHALLENGE / PARTIAL) on every Critic Issue and every Critic RD. The orchestrator will reject your output and require redo if `# Rebuttals` is absent."
       - Save the worker's returned output as the new `current_draft`.
@@ -143,7 +188,7 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       Prepend this block to the redo prompt with the standard preservation instruction (see "Turn-internal redo invariants" section above). After redo, run normalized comparison on each cached section: drift in any → another redo (counts toward max 2).
 
-        **W1 — Self Coverage Plan heading (Turn 1 only)**: `gates.py w1 /tmp/rl-draft-t{turn}.md`. If `FAIL` → redo with prompt: "Your previous output was rejected because it did not start with `## Self Coverage Plan`. Redo Turn 1. Your output's very first heading must be `## Self Coverage Plan` — anything else fails the orchestrator gate. Here is your previous draft for reference (you may reuse the research, but you must add the Self Coverage Plan section at the top): \n\n[paste previous current_draft]". On final failure: prepend a stub `## Self Coverage Plan\n[Worker omitted this section despite gate; Critic should flag]` and proceed.
+        **W1 — Self Coverage Plan heading (Turn 1 only)**: `gates.py w1 /tmp/rl-draft-t{turn}.md`. (On Turn 1, Phase 2 output includes `pre_scp` verbatim, so this should trivially PASS. If `FAIL`, Worker dropped the pre-filled SCP — re-inject `pre_scp` as a cached invariant in the redo prompt.) If `FAIL` → redo with prompt: "Your previous output was rejected because it is missing the `## Self Coverage Plan` section. Include the following pre-approved SCP verbatim at the very start of your output: \n\n[paste pre_scp]\n\nHere is your previous draft for reference: \n\n[paste previous current_draft]". On final failure: prepend a stub `## Self Coverage Plan\n[Worker omitted this section despite gate; Critic should flag]` and proceed.
 
         **W2 — Rebuttals heading (Turn 2+)**: `gates.py w2 /tmp/rl-draft-t{turn}.md`. If `FAIL` → redo with: "Your previous output was rejected because it did not contain a `# Rebuttals` section. Redo this turn — you must take an explicit stance (ACCEPT/CHALLENGE/PARTIAL) on every prior Critic Issue and RD. Here is your previous draft: [paste]".
 
@@ -159,49 +204,116 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
         If count < 2 → redo with: "Your previous output was rejected because you engaged with fewer than 2 Critic Research Directions (Track B requires engaging at least 2 of the prior turn's RDs via INTEGRATE/CHALLENGE/EXPAND). Detected: [count from gate output] engagement(s). Add explicit engagement entries to your `# Rebuttals` and `# Revision Log` sections for the missing RDs. Here is your previous draft: [paste]".
 
-        **W6 — Self Coverage Plan sub-question count (Turn 1 only)**: `gates.py w6 /tmp/rl-draft-t{turn}.md`. SCP table data rows must be in [5, 8] inclusive.
+        **W6 — Self Coverage Plan sub-question count (Turn 1 only)**: `gates.py w6 /tmp/rl-draft-t{turn}.md`. (On Turn 1, Phase 1 already validated SCP row count; this should trivially PASS.) SCP table data rows must be in [5, 8] inclusive.
 
         If count < 5 or count > 8 → redo with: "Your previous output was rejected because the `## Self Coverage Plan` table has [N from gate output] sub-questions, but the required range is 5-8. A plan with fewer than 5 sub-questions is too coarse to act as a meaningful coverage standard; more than 8 dilutes the planning function and signals lack of synthesis. Re-issue Turn 1 with exactly 5-8 specific, verifiable sub-questions. Here is your previous draft: [paste]".
 
       - **Immediately extract `worker_rebuttals`** from `current_draft`: locate the `# Rebuttals` top-level section and capture its full body. If turn ≥ 2 and the section is missing (after the gate redo failed), set `worker_rebuttals = "MISSING — Worker did not produce a # Rebuttals section even after orchestrator gate redo. Critic must flag this as a critical Issue per its Worker Rebuttal Adjudication rule."` If the section exists but is empty, set `worker_rebuttals = "EMPTY — Worker explicitly accepted all prior Critic feedback. No challenges to adjudicate."` If turn = 1, `worker_rebuttals` remains null (Critic Turn 1 prompt does not include it).
 
-   c. **Invoke 4 critics in parallel**: call the Agent tool four times simultaneously (all four calls in a single message):
+   c. **Invoke critics — Phase A (parallel) then Phase B (sequential)**:
+
+      **Phase A — Parallel (all calls in one message)**. On Turn 1, send 5 Agent calls simultaneously; on Turn 2+, send 4:
+
+      - **critic_cm** (Turn 1 only): `subagent_type="research-critic-cm"`, prompt:
+        `"Original task:\n\n{task}\n\n---\n\nGenerate the Coverage Matrix for this research task. The Worker's draft (with Self Coverage Plan at top) is below:\n\n{current_draft}"`
+
+      - **critic_url** (every turn): `subagent_type="research-critic-url"`, prompt:
+        - Turn 1: `"Original task:\n\n{task}\n\n---\n\nVerify all URLs in the Evidence Table of this draft:\n\n{current_draft}"`
+        - Turn 2+: `"Original task:\n\n{task}\n\n---\n\n## Previously verified URLs (skip re-fetch if claim text unchanged)\n\n{prev_url_verified_critic_only}\n\n---\n\nVerify all URLs in the Evidence Table of this draft:\n\n{current_draft}"`
+
+      - **critic_dialectic** (every turn): `subagent_type="research-critic-dialectic"`, prompt:
+        - All turns: `"Original task:\n\n{task}\n\n---\n\nReview this draft for reasoning failures only:\n\n{current_draft}"`
+
+      - **critic_depth** (every turn): `subagent_type="research-critic-depth"`, prompt:
+        - Turn 1: `"Original task:\n\n{task}\n\n---\n\nReview this draft for depth gaps and write Research Directions:\n\n{current_draft}"`
+        - Turn 2+: `"Original task:\n\n{task}\n\n---\n\n## Prior Research Directions (do not repeat these topics — write new directions):\n\n{prev_depth_rds}\n\n---\n\n" + (if dialectic_issues_summary is not null: "## Reasoning gaps found by dialectic critic (optional context for RD direction):\n\n{dialectic_issues_summary}\n\n---\n\n") + "Review this draft for depth gaps and write Research Directions:\n\n{current_draft}"`
+
+      - **critic_width** (every turn): `subagent_type="research-critic-width"`, prompt:
+        - All turns: `"Original task:\n\n{task}\n\n---\n\nReview this draft's Search Log for width gaps:\n\n{current_draft}"`
+
+      Wait for all Phase A agents to complete. Save outputs as: `cm_output` (Turn 1 only), `url_output`, `critic_dialectic_output`, `critic_depth_output`, `critic_width_output`.
+
+      **Phase B — Sequential (invoke ONLY after Phase A gates in step c.5 pass)**. Invoke instruction-critic with pre-generated CM and URL report:
 
       - **critic_instruction**: `subagent_type="research-critic-instruction"`, prompt:
-        - On turn 1: `"Original task:\n\n" + <user task> + "\n\n---\n\nReview this draft:\n\n" + current_draft + "\n\n---\n\n**Note**: Worker submitted a \`## Self Coverage Plan\` at the top of the draft. Use it as input when generating your authoritative \`# Coverage Matrix\`."`
-        - On turn 2+: `"Original task:\n\n" + <user task> + "\n\n---\n\n## Coverage Matrix (do not regenerate — use this for Coverage Verification)\n\n" + coverage_matrix + "\n\n---\n\n## Previous Deepening Questions (check whether Worker addressed ALL of these)\n\n" + prev_dq + "\n\n---\n\n## Previously verified URLs (Critic-self-verified prior turns ONLY)\n\n" + prev_url_verified_critic_only + "\n\n---\n\n## Worker Rebuttals this turn\n\n" + worker_rebuttals + "\n\n---\n\nReview this draft:\n\n" + current_draft`
+        - On turn 1: `"Original task:\n\n{task}\n\n---\n\n## Pre-generated Coverage Matrix (do not regenerate — use directly for Coverage Verification)\n\n{cm_output}\n\n---\n\n## Pre-verified URL Report\n\n{url_output}\n\n---\n\nReview this draft:\n\n{current_draft}"`
+        - On turn 2+: `"Original task:\n\n{task}\n\n---\n\n## Coverage Matrix (do not regenerate — use this for Coverage Verification)\n\n{coverage_matrix}\n\n---\n\n## Previous Deepening Questions (check whether Worker addressed ALL of these)\n\n{prev_dq}\n\n---\n\n## Pre-verified URL Report\n\n{url_output}\n\n---\n\n## Worker Rebuttals this turn\n\n{worker_rebuttals}\n\n---\n\nReview this draft:\n\n{current_draft}"`
 
-      - **critic_dialectic**: `subagent_type="research-critic-dialectic"`, prompt:
-        - All turns: `"Original task:\n\n" + <user task> + "\n\n---\n\nReview this draft for reasoning failures only:\n\n" + current_draft`
+      Wait for Phase B to complete. Save output as `critic_instruction_output`.
 
-      - **critic_depth**: `subagent_type="research-critic-depth"`, prompt:
-        - Turn 1: `"Original task:\n\n" + <user task> + "\n\n---\n\nReview this draft for depth gaps and write Research Directions:\n\n" + current_draft`
-        - Turn 2+: `"Original task:\n\n" + <user task> + "\n\n---\n\n## Prior Research Directions (do not repeat these topics — write new directions):\n\n" + prev_depth_rds + "\n\n---\n\n" + (if dialectic_issues_summary is not null: "## Reasoning gaps found by dialectic critic (optional context for RD direction):\n\n" + dialectic_issues_summary + "\n\n---\n\n") + "Review this draft for depth gaps and write Research Directions:\n\n" + current_draft`
-
-      - **critic_width**: `subagent_type="research-critic-width"`, prompt:
-        - All turns: `"Original task:\n\n" + <user task> + "\n\n---\n\nReview this draft's Search Log for width gaps:\n\n" + current_draft`
-
-      Wait for all four to complete. Save outputs as `critic_instruction_output`, `critic_dialectic_output`, `critic_depth_output`, `critic_width_output`.
-
-      **Merge step** — build `critic_output` from the four outputs:
-      1. Start with `critic_instruction_output` as the base (it contains VERDICT, Coverage Matrix, Coverage Verification, Deepening Questions, Critic WebFetch Audit, URL Verification Report, Worker Rebuttal Adjudication, instruction-level Issues with `I-` prefix, and 1-2 RDs)
-      2. Find the `# Reasoning Audit` section in `critic_dialectic_output` and INSERT it into `critic_output` immediately before the `# Coverage Verification` section
-      3. Find the `# Issues` section in `critic_dialectic_output`; append its `## Issue D-N:` sub-headings to the end of `critic_output`'s `# Issues` section
-      4. Find the `# Issues` section in `critic_depth_output`; append its `## Issue E-N:` sub-headings to the end of `critic_output`'s `# Issues` section
-      5. Find the `# Research Directions` section in `critic_depth_output`; append its RD entries to the end of `critic_output`'s `# Research Directions` section
-      6. Find the `# Width Audit` section in `critic_width_output`; INSERT it into `critic_output` immediately after the `# Coverage Verification` section
-      7. Find the `# Issues` section in `critic_width_output` (if present); append its `## Issue W-N:` sub-headings to the end of `critic_output`'s `# Issues` section
-
-      The first line of `critic_output` remains `critic_instruction_output`'s VERDICT line (authoritative).
+      **Merge step** — build `critic_output` from all outputs:
+      1. (Turn 1 only) Start with `# Coverage Matrix` section from `cm_output` (Stage A/B/Retention Map/Final CM audit trail)
+      2. Append all sections from `critic_instruction_output` in their output order: Coverage Verification, Deepening Questions, Issues (I-prefix), Worker Rebuttal Adjudication (Turn 2+), Research Directions, Meta-concerns (if any), Summary, What's actually solid
+      3. Find the `# Reasoning Audit` section in `critic_dialectic_output` and INSERT it into `critic_output` immediately before the `# Coverage Verification` section
+      4. Find the `# Issues` section in `critic_dialectic_output`; append its `## Issue D-N:` sub-headings to the end of `critic_output`'s `# Issues` section
+      5. Find the `# Issues` section in `critic_depth_output`; append its `## Issue E-N:` sub-headings to the end of `critic_output`'s `# Issues` section
+      6. Find the `# Research Directions` section in `critic_depth_output`; append its RD entries to the end of `critic_output`'s `# Research Directions` section
+      7. Find the `# Width Audit` section in `critic_width_output`; INSERT it into `critic_output` immediately after the `# Coverage Verification` section
+      8. Find the `# Issues` section in `critic_width_output` (if present); append its `## Issue W-N:` sub-headings to the end of `critic_output`'s `# Issues` section
+      9. Append `# Critic WebFetch Audit` section from `url_output`
+      10. Append `# URL Verification Report` section from `url_output`
+      11. Append the `Advisory VERDICT:` line from `critic_instruction_output` at the very end (for debugging; orchestrator does NOT parse this for loop control)
 
       **Extract dialectic issues summary** (for next turn's depth-critic context):
       From `critic_dialectic_output`, extract Issue titles and one-line problems from the `# Issues` section. Store as `dialectic_issues_summary` (compact format, 3-5 lines max).
 
       Save the merged result as `critic_output`.
 
-   c.5. **Mechanical Critic gate (sanity check before parsing verdict)**:
+   c.5. **Mechanical Critic gates**:
 
-      Run five checks against `critic_output` in order. Each failure triggers a redo (maximum 2 redos per turn). Check 1 (schema) runs first — without a valid output structure, the other checks have nothing meaningful to operate on. Check 5 (invariant drift) runs last — it only applies when a redo cache exists from a prior attempt this turn.
+      Gates are split into two phases. **Phase A gates** run between Phase A and Phase B — they validate `cm_output` and `url_output`, and redo the specific failing agent (max 2 redos each) before Phase B is invoked. **Phase B gates** run after Phase B — they validate `critic_instruction_output` and the merged `critic_output`.
+
+      ---
+
+      ### Phase A gates (run BEFORE invoking Phase B)
+
+      **CM gate (Turn 1 only — validates `cm_output` from `research-critic-cm`)**:
+
+      1. `## Stage A — Brainstorm` heading exists AND contains ≥ 10 candidate items tagged `[Worker SCP C#]` or `[Critic add]`
+      2. `## Stage B — Critique` heading exists AND the table has data rows (at least as many as Stage A candidates)
+      3. `## Retention Map (Worker SCP → Critic Coverage Matrix)` heading exists AND the `Action` column is present AND a `Retention count:` line is present
+      4. `## Final Coverage Matrix` heading exists AND the table has `Origin` and `Verifier tags` columns AND has 5–8 data rows
+      5. Retention count (RETAIN-AS-IS + RETAIN-REFINED) ≥ 3, OR a `## Retention rationale` paragraph with ≥ 100 characters exists below the Retention Map
+
+      Failure → redo `research-critic-cm` (max 2) with cached invariants from prior `cm_output` attempt (non-failing sections only). Redo prompt:
+      ```
+      **CM GATE FAILURE — your previous output had structural gaps.**
+      Gate failures: {list of failed sub-checks from above}
+      Cached invariants from prior attempt (preserve verbatim — non-failing sections only):
+      {paste non-failing sections from prior cm_output verbatim}
+      Fix only the flagged sections. Do not regenerate passing sections.
+      Original task: {task}
+      Worker draft: {current_draft}
+      ```
+
+      **URL gate (every turn — validates `url_output` from `research-critic-url`)**:
+
+      1. `# Critic WebFetch Audit` heading exists AND the table has a `Tool used` column
+      2. `# URL Verification Report` heading exists AND the table has a `Provenance` column
+      3. No row in `# Critic WebFetch Audit` has status `No — NOT FETCHED` (all URLs requiring verification must be fetched)
+      4. No prose self-admission of missed fetches: scan for "本应抓未抓" / "NOT FETCHED" / "Critic should have fetched" / "未抓 — Critic" / "下一轮必须补" (context: fetching)
+      5. For rows where "Content supports claim?" exhibits a suspicious signal (JS shell, soft-404, "Page not found" with HTTP 200, "Please enable JavaScript", body < 500 chars) AND `Tool used` does NOT contain "Playwright" → missed escalation
+
+      Failure → redo `research-critic-url` (max 2) with cached invariants:
+      ```
+      **URL GATE FAILURE — your previous output had verification gaps.**
+      Gate failures: {list of failed sub-checks from above}
+      Cached invariants (preserve verbatim — already-fetched rows only):
+      {paste # Critic WebFetch Audit rows with status "Yes — Turn N" verbatim}
+      {paste # URL Verification Report rows with Provenance "Critic-verified Turn N" verbatim}
+      Fix only the flagged issues. Do not re-fetch already-verified URLs.
+      Original task: {task}
+      Worker draft: {current_draft}
+      Previously verified URLs (skip re-fetch if claim unchanged): {prev_url_verified_critic_only}
+      ```
+
+      After both Phase A gates pass, invoke Phase B (research-critic-instruction).
+
+      ---
+
+      ### Phase B gates (run AFTER Phase B completes)
+
+      Run checks against `critic_instruction_output` and the merged `critic_output` in order. Each failure triggers a redo of `research-critic-instruction` (maximum 2 redos per turn). Check 1 (schema) runs first. Check 5 (invariant drift) runs last.
 
       **Critic redo invariant injection** (when any Check 1-4 triggers redo): build a "Cached invariants from prior attempt — preserve verbatim" block by extracting from the prior Critic output (the most recent attempt within this turn that produced the section):
       - `# Coverage Matrix` table (Turn 1 only; lock once generated)
@@ -222,50 +334,21 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       This scopes the invariant preservation to the individual critic's work, preventing cross-contamination.
 
-      **Check 1 — Critic output schema completeness**:
-      The Critic must produce all required top-level sections AND the required tables must have the right columns AND every Issue must have a parseable Severity. If any of these fails, the rest of the orchestrator pipeline (steps d/e/f) silently degrades — Worker receives empty/broken feedback, severity history loses signal, the Provenance filter in step e matches nothing, etc. Mechanical schema validation closes that gap.
+      **Check 1 — `critic_instruction_output` schema completeness**:
+      Validates that `research-critic-instruction` produced all required sections. If any required heading is missing, table column missing, Severity malformed, or quality gate fails, trigger redo of `research-critic-instruction` (NOT the other critics). `# Critic WebFetch Audit` and `# URL Verification Report` are validated by the URL gate above, not here.
 
       Required for **every turn** (heading must appear at the start of a line, exact match):
-      - First non-empty line of `critic_output` must be exactly `VERDICT: PASS`, `VERDICT: REVISE`, or `VERDICT: FAIL` (no trailing punctuation, no leading prose, no inline qualifiers like "PASS conditional")
-      - `# Reasoning Audit` heading must be present, AND the section must contain a line matching `Reasoning Audit result: CLEAN` or `Reasoning Audit result: ISSUES FOUND`
+      - `# Reasoning Audit` heading must be present in merged `critic_output` (merged from dialectic — if merge step ran correctly, this must appear), AND the section must contain a line matching `Reasoning Audit result: CLEAN` or `Reasoning Audit result: ISSUES FOUND`
       - `# Coverage Verification` heading must be present
       - `# Issues` heading must be present (may contain "No issues this turn" content if PASS, but the heading itself is non-optional — this is what step e extracts)
       - `# Deepening Questions` heading must be present
       - `# Research Directions` heading must be present
       - `# Summary` heading must be present (1-2 sentence content; step f extracts a line from here)
-      - `# Critic WebFetch Audit` heading must be present
-      - `# URL Verification Report` heading must be present
-
-      Required on **Turn 1 only** (additionally):
-      - `# Coverage Matrix` heading must be present (consumed in step e to set `coverage_matrix` for all subsequent turns — missing it breaks every later turn)
-      - **Coverage Matrix three-phase structure**: Critic Turn 1 must visibly produce three phases before the Final Coverage Matrix (per critic.md):
-        - `## Stage A — Brainstorm` heading with ≥ 10 candidate sub-questions, each tagged `[Worker SCP C#]` or `[Critic add]`. **Mechanical count check**: count list items matching regex `^-\s+\[(Worker SCP C\d+|Critic add)\]` within the Stage A section; must be ≥ 10. Fewer than 10 → gate fail with reason `Stage A insufficient brainstorm: only N candidates listed, ≥ 10 required to force divergent thinking before commit`.
-        - `## Stage B — Critique` heading with a markdown table running specificity + survivorship tests on each Stage A candidate. **Mechanical row check**: count data rows in the Stage B table; must equal Stage A candidate count (every Stage A candidate must appear in Stage B critique). Mismatch → gate fail.
-        - `## Retention Map` heading with table mapping every Worker SCP row to RETAIN-AS-IS / RETAIN-REFINED / REJECT, plus a `Retention count: N retained / M rejected` line
-        - `## Final Coverage Matrix` heading with the 5-8 row table
-
-        Missing any of the four sub-headings → gate fail with reason `Missing Coverage Matrix phase: {Stage A | Stage B | Retention Map | Final Coverage Matrix}`. Forces Critic to do the brainstorm-critique-commit work visibly rather than skipping straight to a possibly-shallow final matrix.
-
-      - **Coverage Matrix Worker SCP retention count**: parse the `## Retention Map` table; count rows whose Action column is `RETAIN-AS-IS` or `RETAIN-REFINED`. Count MUST be ≥ 3. Exception: if Critic provides a ≥ 100-character `Retention rationale` paragraph below the Retention Map explaining why fewer than 3 of Worker SCP rows were retainable, the orchestrator allows the lower count (otherwise Critic would never be able to override truly poor Worker SCPs). Without that explanation paragraph, retention < 3 is gate fail.
-
-      - **Coverage Matrix adequacy verifier tags**: parse the `## Final Coverage Matrix` table. The schema must have a `Verifier tags` column. For each row:
-        - The `充分覆盖标准 / adequacy` column must contain at least one of these mechanically-detectable verifier signatures:
-          - **数字 / number**: any digit `\d` paired with a quantifier word (`至少`, `≥`, `≥=`, `>=`, `不少于`, `at least`, `minimum`)
-          - **命名 / named**: phrase like `命名 ≥`, `列出 ≥`, `name ≥`, `list ≥`, or proper-noun list pattern
-          - **比较 / comparison**: keywords `对比`, `比较`, `差异`, `vs`, `between`, `versus`
-          - **反例 / failure-case**: keywords `失败案例`, `反例`, `反方`, `反驳`, `failure mode`, `counter`, `counterexample`
-          - **时间锚 / time-anchor**: explicit year regex `\d{4}` or quarter `Q\d` or "至少 N 个时间节点"
-        - The `Verifier tags` column must list ≥ 1 of `[数字]`, `[number]`, `[命名]`, `[named]`, `[比较]`, `[comparison]`, `[反例]`, `[failure-case]`, `[时间锚]`, `[time-anchor]` matching what's actually in the adequacy column.
-        - If a row's adequacy column has no detectable verifier signature → gate fail with reason `Coverage Matrix row C{N} adequacy criteria has no mechanical verifier — must include at least one of [数字]/[命名]/[比较]/[反例]/[时间锚]`. Forces Critic to write measurable criteria.
-
-        Also verify the table has the 5-column schema: `| # | 子问题 | 充分覆盖标准 | Origin | Verifier tags |`. Missing `Origin` or `Verifier tags` column → gate fail.
-
       Required on **Turn 2+ only** (additionally):
       - `# Worker Rebuttal Adjudication` heading must be present (no longer tolerated as "if present" — Critic must always adjudicate Turn 2+, even if the content is just "No rebuttals submitted." for an empty Worker `# Rebuttals` section)
 
-      **Required table column structures** (parse the table immediately under each heading; verify the header row contains the named column literal — case-insensitive match):
-      - `# Critic WebFetch Audit` table MUST have a `Tool used` column. The orchestrator's Check 4 (Playwright escalation) parses this column to detect missed escalations — if the column is absent, Check 4 is silently disabled. Missing this column is a gate fail.
-      - `# URL Verification Report` table MUST have a `Provenance` column. The orchestrator's step e filter (`prev_url_verified_critic_only`) uses this column to drop Worker-claimed rows and pass only Critic-verified rows to the next turn — if the column is absent, the filter degrades to either passing all rows (allowing Worker-self-fetch laundering) or matching nothing (forcing wasteful re-fetch). Missing this column is a gate fail.
+      **Required table column structures** (for tables in `critic_instruction_output`):
+      - `# Coverage Verification` table header must have `Status` column — the orchestrator's VERDICT computation counts MISSING rows in this column. Missing column → VERDICT computation silently defaults to 0 missing, potentially spurious PASS.
 
       **Required Issue severity labels**:
       - For each `## Issue [N]:` (or `## Issue X:`) sub-heading inside the `# Issues` section, the body must contain a line matching `Severity:` followed by exactly one of: `critical`, `major`, `minor` (case-insensitive). Other values (`blocker`, `trivial`, `low`, `high`, etc.) are gate fail.
@@ -293,9 +376,13 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       If any required heading is missing, table column missing, Severity malformed, Coverage quote missing on COVERED rows, DQ count outside [2,3], RD count outside [2,3] or RD body too skinny, Reasoning Audit sub-checks missing, OR the first-line VERDICT is malformed: gate fail. Build a list of all problems and proceed to gate fail action with Check 1 hits populated.
 
-      **Check 1 Phase B — Validate 3 specialized critics' raw outputs** (independent of merged critic_output):
+      **Check 1 Phase B — Validate 4 specialized critics' raw outputs** (independent of merged critic_output):
 
-      Run these checks on the raw outputs BEFORE the merge step. Each failure triggers redo of ONLY the failing critic (max 2 redos for that critic independently).
+      Run these checks on the raw outputs BEFORE the merge step (or after Phase A for cm/url). Each failure triggers redo of ONLY the failing critic (max 2 redos for that critic independently).
+
+      **Phase A.1 — cm-critic output (Turn 1 only)**: handled by the CM gate above. No separate Phase B check needed.
+
+      **Phase A.2 — url-critic output**: handled by the URL gate above. No separate Phase B check needed.
 
       **Phase B.1 — dialectic-critic output**:
       - Must contain `# Reasoning Audit` heading with all four sub-checks (`Check 1 — Specificity test`, `Check 2 — Survivorship bias`, `Check 3 — Inference chain completeness`, `Check 4 — Internal consistency`) and a `Reasoning Audit result:` line
@@ -321,41 +408,7 @@ In other words: **cached invariants = sections from prior attempt that weren't t
       - `# Reasoning Audit` (merged from dialectic — if merge step ran correctly, this must appear)
       - `# Width Audit` (merged from width — same)
 
-      **Check 2 — Critic WebFetch Audit completeness**:
-      1. Parse `# Critic WebFetch Audit` table from `critic_output`. (Heading existence already verified by Check 1; Check 2 verifies the table contents.)
-      2. Build the set of "first-encounter URLs this turn":
-         - From `current_draft`'s Evidence Table, take every row whose Source URL is `https://...` with a page path (i.e., contains `/` after the domain and the path is not just `/`)
-         - Exclude URLs in the source-string blacklist (grounding redirects, SERP, "search summary" placeholders, vendor home roots — see Critic's blacklist)
-         - Exclude URLs that appear in `prev_url_verified_critic_only` AND whose surrounding claim text in `current_draft` is unchanged (these are legitimately skippable)
-         - The remaining URLs are first-encounter for this turn
-      3. For each first-encounter URL, find its row in the Critic WebFetch Audit table. The row's status column must start with `Yes — Turn {current_turn}` (Critic personally fetched). Any of the following are gate fail:
-         - URL is missing from the Audit table
-         - Status starts with `No — NOT FETCHED`
-         - Status starts with `Skipped` but the URL is NOT in `prev_url_verified_critic_only` (Skipped is only legal for already-Critic-verified URLs)
-
-      **Check 3 — Prose self-admission of fetch failure**:
-      Scan `critic_output` for any of these phrases (case-insensitive substring match):
-      - "本应抓未抓" / "本应 fetch 但未 fetch" / "本应 fetch 未 fetch"
-      - "Critic 自身失职" / "Critic 失职" / "Critic-self-failure" / "Critic should have fetched"
-      - "下一轮必须补" / "下次必须补"（in context of fetching）
-      - "未抓 — Critic" / "未 fetch — Critic"
-
-      If any match: gate fail. Critic admitted in prose what it didn't do in the audit table — same effect as Check 2.
-
-      **Check 4 — Suspicious WebFetch result not escalated to Playwright**:
-      For each row in the Critic WebFetch Audit table, check whether the row exhibits a "soft failure" signal that should have triggered Playwright escalation:
-      1. Parse the row's "Content supports claim?" column for these patterns (case-insensitive substring):
-         - "Page not found" / "Article not found" / "Not Found"
-         - "正在加载" / "数据不存在" / "已被删除" / "404"
-         - "Please enable JavaScript" / "noscript" / "Loading..."
-         - "currently being developed" / "coming soon" / "placeholder"
-         - "Bulk Material Handling" or other obviously-unrelated SEO landing words (when the claim was about a different topic)
-         - Body length explicitly noted as <500 chars or `body = ""` or "empty body"
-      2. If any of these patterns matches AND the row's "Tool used" column does NOT contain "Playwright" (i.e., Critic used WebFetch only and got a suspicious result, but didn't escalate): gate fail.
-      3. Exclusions (do NOT trigger gate fail):
-         - HTTP status is hard ✗ 404 / ✗ 500 (real server failure, Playwright won't help)
-         - Tool used already shows "WebFetch + Playwright (escalated)" with both attempts failing (escalation was attempted)
-         - URL is on the source-string blacklist (no point fetching either way)
+      *(Checks 2/3/4 — WebFetch completeness, prose admission, Playwright escalation — are now handled by the URL gate above, which runs on `url_output` from `research-critic-url` before Phase B is invoked. They are not re-run on merged `critic_output` here.)*
 
       **Check 5 — Invariant drift detection (only applies when a redo cache exists from prior attempt this turn)**:
 
@@ -453,39 +506,32 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       Report DRIFT entries (without accepted overrides) in the redo prompt under a `## Check 5 drift findings` block so Critic sees specifically what to restore. Report OVERRIDE-ACCEPTED entries in the turn log only (no redo trigger).
 
-      **Gate fail action (any of Checks 1–5)**: do NOT proceed to step d (verdict parsing). Re-invoke Critic with this redo prompt:
+      **Gate fail action (any of Check 1 or Check 5)**: do NOT proceed to step d (verdict parsing). Re-invoke `research-critic-instruction` with this redo prompt:
 
       ```
-      **ORCHESTRATOR CRITIC GATE FAILURE — your previous output had verification, schema, or invariant-drift gaps.**
+      **ORCHESTRATOR CRITIC GATE FAILURE — your previous output had schema or invariant-drift gaps.**
 
       The orchestrator detected the following issues:
       {Check 1 hits, if any: list of missing required sections / column structures / Severity / quality issues}
-      {Check 2 hits, if any: list of unfetched URLs}
-      {Check 3 hits, if any: quoted prose admission}
-      {Check 4 hits, if any: list of URLs where WebFetch returned suspicious content but Playwright escalation was skipped}
       {Check 5 hits, if any: list of cached invariant sections that drifted from prior attempt — Critic regenerated instead of preserving}
 
       ## Cached invariants from prior attempt — preserve verbatim
 
       The orchestrator caches the sections below from your prior attempt. **These are NOT suggestions or starting points — they are required content that must appear in your redo character-for-character (modulo trailing whitespace and minor markdown formatting like bold markers / table alignment).**
 
-      The following sections were marked NON-INVARIANT for this redo because they were the source of the gate failure: {list e.g., "# Coverage Matrix" if Check 1 found it malformed}. You may regenerate ONLY these specific sections.
+      The following sections were marked NON-INVARIANT for this redo because they were the source of the gate failure: {list e.g., "# Coverage Verification" if Check 1 found it malformed}. You may regenerate ONLY these specific sections.
 
       All OTHER sections below MUST be preserved verbatim. Specifically:
 
       **What "preserve verbatim" means in practice (read carefully)**:
 
-      - `# Reasoning Audit`: if your prior attempt had `Specificity test - Claim A: "Highland Park 1913 流水线..." Claim B: "Model T 装配..." Claim C: "Paul David 1990..."`, your redo MUST list THE SAME 3 claims. Do not pick different claims to test. Do not change Y/N assessments. Do not switch which sub-check found issues. The Reasoning Audit is your analysis of the Worker draft — it doesn't change just because you needed to add a missing column elsewhere.
-
-      - `# URL Verification Report`: if your prior attempt verified URLs A, B, C, D, your redo MUST include A, B, C, D with the same HTTP Status / Provenance / Supports claim? / Action. You may ADD URLs E, F, G if you fetched additional ones in this redo, but you cannot REPLACE A with A' (e.g., jstor.org/stable/2120991 → jstor.org/stable/2120731 is replacement, not addition). Each cached URL row's content must match — only the Provenance column may upgrade from "Worker-claimed" to "Critic-verified Turn N" if you re-fetched.
+      - `# Reasoning Audit`: if your prior attempt had `Specificity test - Claim A: "Highland Park 1913 流水线..." Claim B: "Model T 装配..." Claim C: "Paul David 1990..."`, your redo MUST list THE SAME 3 claims. Do not pick different claims to test.
 
       - `# Issues`: if your prior attempt had `## Issue 1: 福特数字与可验证来源不符` and `## Issue 2: F23 URL 失效`, your redo MUST keep `## Issue 1` and `## Issue 2` with the same titles, severity, and body content. New issues found this redo go to `## Issue N+1`, `## Issue N+2` ... — never renumber existing ones. If you want to withdraw a cached Issue, mark it `Withdrawn: <reason>` rather than deleting.
 
       - `# Research Directions`: cached RD titles + Critic's contribution body + Worker's task must remain. Substantive content (named authors / works / years / numbers / mechanisms) cannot be swapped for different ones.
 
-      - `# Coverage Matrix` (Turn 1): the Final Coverage Matrix table is the cross-turn anchor. Every row's sub-question text and adequacy criteria must be preserved. Same for Stage A / Stage B / Retention Map (these are also cached unless Coverage Matrix itself was the failure source).
-
-      - `# Critic WebFetch Audit`: cached rows for already-fetched URLs preserved; you may add rows for newly-fetched URLs.
+      - `# Worker Rebuttal Adjudication`: cached rulings already issued must remain (unchanged or annotated with `Withdrawn: <reason>`).
 
       **Test for whether you're regenerating instead of preserving**: ask yourself "if I had access to the prior attempt's text and wanted to copy this section, would I copy it character-for-character?" If your redo's section reads differently, you're regenerating.
 
@@ -493,32 +539,25 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       Cached sections (preserve verbatim unless listed as NON-INVARIANT above):
 
-      {Cached # Coverage Matrix content, if applicable}
       {Cached # Reasoning Audit content, if applicable}
       {Cached # Issues content, if applicable}
       {Cached # Research Directions content, if applicable}
-      {Cached # Critic WebFetch Audit rows for already-fetched URLs, if applicable}
-      {Cached # URL Verification Report rows for already-analyzed URLs, if applicable}
       {Cached # Worker Rebuttal Adjudication rulings, if applicable (Turn 2+)}
 
       ## Action required for the gate failures
       ```
 
       ```
-      **ORCHESTRATOR CRITIC GATE FAILURE — your previous output had verification or schema gaps.**
+      **ORCHESTRATOR CRITIC GATE FAILURE — your previous output had schema gaps.**
 
       The orchestrator detected the following issues:
       {Check 1 hits, if any: list of missing required sections — each section must appear in the redo with non-empty content}
-      {Check 2 hits, if any: list of unfetched URLs}
-      {Check 3 hits, if any: quoted prose admission}
-      {Check 4 hits, if any: list of URLs where WebFetch returned suspicious content but Playwright escalation was skipped}
+      {Check 5 hits, if any: list of cached invariant sections that drifted}
 
       Action required:
       1. For Check 1 hits (schema/column/severity/quality gaps): re-issue your full critic_output addressing each specific problem:
          - Missing required headings: re-issue with EVERY required heading present. Even sections with nothing to report (e.g., `# Issues` when verdict is PASS) must appear with explicit content like "No material issues this turn." A bare heading with no body is acceptable; a missing heading is not.
-         - Malformed first-line VERDICT: ensure the very first non-empty line is exactly `VERDICT: PASS`, `VERDICT: REVISE`, or `VERDICT: FAIL` — no preamble, no qualifier, no trailing punctuation.
-         - Missing `Tool used` column in `# Critic WebFetch Audit` table: re-issue the table with the 6-column schema: `| # | URL | Tool used | WebFetch/Playwright called by Critic in this session? | Raw HTTP status | Content supports claim? |`
-         - Missing `Provenance` column in `# URL Verification Report` table: re-issue with the 5-column schema including `Provenance` (values: `Critic-verified Turn N`, `Worker-claimed (NOT yet Critic-verified)`, or `Critic-verified Turn N-X (skipped this turn, claim unchanged)`).
+         - Missing `Status` column in `# Coverage Verification` table: re-issue with the full table including `Status` column (COVERED/PARTIAL/MISSING per row).
          - Malformed Issue Severity: each `## Issue` sub-heading must have a `Severity:` line with value `critical`, `major`, or `minor`. Replace any other values (e.g., `blocker`, `trivial`, `low`, `high`) with the closest valid option.
          - Coverage Verification rows missing quotes on COVERED items: each COVERED row's Evidence column must contain a real direct quote from the draft (≥10 chars + quote marks or specific phrase reference). Replace `—` / `n/a` / generic descriptions with the actual quoted anchor.
          - DQ count outside [2,3]: produce exactly 2 or 3 Deepening Questions — fewer than 2 means insufficient depth probing; more than 3 means list-padding. Pick the most-substantive 2-3.
@@ -527,18 +566,9 @@ In other words: **cached invariants = sections from prior attempt that weren't t
          - Coverage Matrix three-phase structure missing (Turn 1): produce the four sub-headings in order — `## Stage A — Brainstorm` (≥10 candidates), `## Stage B — Critique` (specificity + survivorship table), `## Retention Map` (Worker SCP disposition table + count line), `## Final Coverage Matrix` (5-column table including `Origin` and `Verifier tags`).
          - Coverage Matrix Worker retention < 3 (Turn 1): preserve at least 3 of Worker's SCP sub-questions as RETAIN-AS-IS or RETAIN-REFINED. If you genuinely think Worker's plan is unusable, write a ≥ 100-character `Retention rationale` paragraph explaining why; without it, you must increase retention.
          - Coverage Matrix adequacy missing verifier (Turn 1): every row's `充分覆盖标准` column must contain at least one mechanically-detectable verifier ([数字]/[命名]/[比较]/[反例]/[时间锚]). Replace vague phrases like "深入讨论" / "充分覆盖" / "给出关键问题" with measurable criteria like "至少 3 个具体年份事件" / "命名 ≥ 2 家代表玩家" / "对比 ≥ 2 个相反框架" / "≥ 1 个具名失败案例及死因".
-         The orchestrator scans heading literals, table column headers, Severity values, Coverage quotes, DQ count, RD count + body length, Reasoning Audit sub-check presence, Coverage Matrix three-phase headings, retention count, and adequacy verifier tags on redo — any of these missing again triggers another redo (max 2).
-      2. For Check 2/3 hits (URL fetch gaps): call WebFetch on each unfetched URL (one fetch per URL). If unreachable, mark `✗ 404` / `✗ 500` / `✗ timeout` and corroborate via alternative source.
-      3. For Check 4 hits (suspicious WebFetch): WebFetch returned a soft-failure signal (placeholder text, JS shell, "Not Found" body with HTTP 200, etc.) for these URLs. Use Playwright to re-verify:
-         - `mcp__plugin_playwright_playwright__browser_navigate` to the URL
-         - `mcp__plugin_playwright_playwright__browser_wait_for` for 2-3 seconds (let JS render)
-         - `mcp__plugin_playwright_playwright__browser_snapshot` to get rendered accessibility tree
-         - Check if the rendered content actually matches the claim's expected anchor
-         - If Playwright also shows missing content: the URL is genuinely fabricated/dead — mark `✗ content mismatch (verified by Playwright)` and downgrade the claim
-         - If Playwright recovers the content: mark `✓ Playwright-recovered` and update the row's Tool used to `WebFetch + Playwright (escalated)`
-      4. Re-issue your full critic_output with the updated `# Critic WebFetch Audit` and `# URL Verification Report` tables. Provenance for newly verified URLs should be `Critic-verified Turn {current_turn}`.
+         The orchestrator scans heading literals, table column headers, Severity values, Coverage quotes, DQ count, RD count + body length, and Reasoning Audit sub-check presence on redo — any of these missing again triggers another redo (max 2).
 
-      The orchestrator will run all four gates again on your redo. Maximum 2 redos per turn.
+      The orchestrator will run Check 1 and Check 5 again on your redo. Maximum 2 redo attempts per turn.
 
       Original task: {original task}
       Worker draft: {current_draft}
@@ -546,10 +576,29 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       Replace `critic_output` with the redo result and re-run all four gates. Maximum 2 redo attempts per turn — if any gate still fails after 2 redos, manually annotate the orchestrator's turn log with `Critic-gate-failed-after-2-redos: {description of which gate(s) and what failed}` and proceed to step d (so the loop can continue), but treat this turn's verdict as REVISE regardless of what Critic wrote.
 
-      **Why the four-gate design**: empirically observed failure modes — (Check 1) Critic returning malformed output with missing required sections, causing orchestrator step e to build degraded critic_feedback that propagates broken state to next turn; (Check 2) Critic inheriting Worker's "I fetched it" claims without independent verification; (Check 3) Critic admitting in prose it didn't fetch but issuing PASS anyway; (Check 4) Critic using WebFetch only, getting a soft 404 / JS shell / SEO rotation page, recording it as failed but not trying Playwright when the URL might be genuinely valid behind JS rendering. Each gate closes one mode; together they make the verdict process tamper-resistant against LLM shortcuts and structural omissions.
+      **Why the gate design**: empirically observed failure modes — (CM gate) Coverage Matrix generation competes with VERDICT ordering and URL I/O in a single call, causing ~100% Turn 1 redo rate; splitting CM generation to a dedicated agent eliminates this; (URL gate) URL verification is I/O-bound and independent of reasoning, merging it into instruction-critic overwhelms that agent's context; splitting it to a dedicated Sonnet agent eliminates URL-redo contagion; (Check 1) Instruction-critic may omit required sections, causing step e to build degraded critic_feedback that propagates broken state to next turn; mechanical schema check closes that gap; (Orchestrator-computed VERDICT) Instruction-critic's VERDICT was subject to ordering constraints (conclusion before reasoning) that caused ~100% Turn 1 failure; moving VERDICT computation to the orchestrator closes that structural failure mode. Together these gates make the loop tamper-resistant against LLM shortcuts and structural omissions.
 
-   d. **Parse verdict**: read the first non-empty line of `critic_output`. After Check 1 (schema completeness) has passed in step c.5, this line is guaranteed to be exactly `VERDICT: PASS`, `VERDICT: REVISE`, or `VERDICT: FAIL`.
-      - Defensive fallback (should be unreachable if c.5 ran correctly): if somehow the first line is malformed despite c.5 passing, log "malformed verdict despite c.5 — orchestrator bug" and treat as REVISE.
+   d. **Compute VERDICT** (orchestrator-side, mechanical — does not depend on any LLM output line):
+
+      ```
+      critical_count = count of ## Issue sub-headings in merged critic_output's # Issues section
+                        whose body contains "Severity: critical" or "Severity**: critical"
+      major_count    = same but "Severity: major"
+      missing_count  = count of rows in # Coverage Verification table whose Status column = "MISSING"
+
+      IF critical_count > 0:
+          VERDICT = FAIL
+      ELSE IF major_count == 0 AND missing_count == 0:
+          VERDICT = PASS
+      ELSE:
+          VERDICT = REVISE
+      ```
+
+      Record the computation in the turn log: `Orchestrator VERDICT: {X} (critical={C}, major={M}, cm_missing={N})`.
+
+      The `Advisory VERDICT:` line from `critic_instruction_output` (at the end of that output) is saved for debugging comparison only — it does NOT control the loop.
+
+      - Defensive fallback: if `# Issues` or `# Coverage Verification` section is missing from merged `critic_output` despite Check 1 passing (should not happen), treat as REVISE and log `VERDICT: REVISE (fallback — missing Issues or Coverage Verification in merged output)`.
 
    e. **Extract critic feedback for worker, and worker rebuttals for next critic**:
 
@@ -563,13 +612,14 @@ In other words: **cached invariants = sections from prior attempt that weren't t
       - Append a **dead link list**: scan `# URL Verification Report` for rows where HTTP Status is `✗ 404`, `✗ 500`, `✗ timeout`, or `✓ 200 but content mismatch`. For each dead URL, add: `Dead link: {URL} — find alternative source.`
       - Do NOT include the `# URL Verification Report` table in full, nor `# What's actually solid`, nor `# Reasoning Audit`. Store the result as `critic_feedback`.
 
-      **From `critic_output`** (build state for the NEXT Critic turn):
-      - `prev_url_verified_critic_only`: extract the `# URL Verification Report` table verbatim (byte-for-byte from `critic_output`), then keep only rows whose `Provenance` column literally starts with `Critic-verified`. Drop any row whose Provenance is `Worker-claimed (NOT yet Critic-verified)` or any other non-Critic-verified label. The next Critic turn will only skip re-fetch on URLs in this filtered table.
+      **From `url_output`** (build state for the NEXT Critic turn):
+      - `prev_url_verified_critic_only`: extract the `# URL Verification Report` table verbatim from `url_output`, then keep only rows whose `Provenance` column literally starts with `Critic-verified`. Drop any row whose Provenance is `Worker-claimed (NOT yet Critic-verified)` or any other non-Critic-verified label. The next turn passes this filtered table to `research-critic-url` so it can skip re-fetching already-verified URLs.
+
       - `prev_dq`: the full `# Deepening Questions` section, extracted verbatim (so next Critic can verify DQ coverage independently of Worker's Revision Log).
       - `prev_depth_rds`: from `critic_depth_output` (NOT from merged `critic_output`), extract the `# Research Directions` section — specifically the `**RD1/RD2/RD3:** [title]` lines (titles only, not the full body). Store as a compact list of RD titles (3-6 lines). Passed to the next turn's `critic_depth` prompt as `## Prior Research Directions (do not repeat)` to prevent the depth critic from proposing the same directions as prior turns.
 
       - `dialectic_issues_summary`: from `critic_dialectic_output`, extract `## Issue D-N:` sub-headings and their one-line `- **Problem**:` text. Format as a compact 3-5 line summary. Passed as optional context to next turn's `critic_depth` prompt.
-      - On turn 1 only: extract the `## Final Coverage Matrix` sub-section (the 5-8 row table inside `# Coverage Matrix`, not the Stage A/B/Retention Map audit trail) verbatim and save as `coverage_matrix` (used in all subsequent Worker and Critic prompts). **Verbatim means byte-for-byte from the `## Final Coverage Matrix` sub-heading through the last table row — no paraphrasing, no condensing, no whitespace normalization, no orchestrator-side rewriting. The next Critic turn's prompt will include this exact text under `## Coverage Matrix (do not regenerate — use this for Coverage Verification)`. Any orchestrator-side editing here breaks the cross-turn invariant chain — empirically observed in the 1880-1930 electrification test where the orchestrator condensed the Critic's Coverage Matrix into a different summary version, causing untrackable drift. The Stage A brainstorm + Stage B critique + Retention Map remain in Critic Turn 1's `critic_output` for the audit trail (and are visible in the final loop report) but are NOT propagated into the cross-turn `coverage_matrix` state — they served their purpose at Turn 1 and downstream turns only need the committed Final Matrix.**
+      - On turn 1 only: extract the `## Final Coverage Matrix` sub-section verbatim from `cm_output` (NOT from `critic_instruction_output`) and save as `coverage_matrix`. **Verbatim means byte-for-byte from the `## Final Coverage Matrix` sub-heading through the last table row — no paraphrasing, no condensing, no whitespace normalization, no orchestrator-side rewriting.** The next Worker and Critic turns receive this exact text. The Stage A brainstorm + Stage B critique + Retention Map from `cm_output` remain in `critic_output` as audit trail but are NOT propagated into `coverage_matrix` — downstream turns only need the committed Final Matrix.
 
       **Note on `worker_rebuttals`**: this is extracted in step b (when the Worker draft is produced), not here in step e. By the time you reach step e, `worker_rebuttals` for the next iteration is already set; your job in step e is only the Critic-output-derived state.
 
@@ -586,7 +636,7 @@ In other words: **cached invariants = sections from prior attempt that weren't t
       - `FAIL` → break the loop (including cycle-detected FAIL from step g)
       - `REVISE` → `critic_feedback` already set in step e; continue to next turn
 
-   **PASS 权限检查（每轮强制）**：在执行 Branch 之前，确认 `critic_output` 的第一个非空行确实是 `VERDICT: PASS`。如果你发现自己准备写 Loop Summary 但无法找到这行文字——说明你跳过了 Critic 调用。立即回到步骤 c，补调 Critic，再继续。
+   **PASS 权限检查（每轮强制）**：在执行 Branch 之前，确认 step d 的 orchestrator VERDICT 计算已执行，且 `verdict` 变量已被赋值（`PASS` / `REVISE` / `FAIL` 之一）。如果你发现自己准备写 Loop Summary 但 `verdict` 变量为空或不存在——说明你跳过了 step c（Critic 调用）或 step d（VERDICT 计算）。立即回到步骤 c，补调 Critic，再继续。
 
 3.5. **Draft Acceptance Criteria (DAC) — fallback only when Critic was never invoked**:
 
@@ -602,11 +652,10 @@ DAC is a mechanical check, not a judgment. Each criterion is either ✓ or ✗ �
 | C4 | At least one section explicitly discusses failure cases, counterarguments, or limitations (more than a one-line disclaimer) | Read Answer section |
 | C5 | Evidence quality ratio: count Evidence Table rows by label. **([事实·强] count) / (total rows)** must be ≥ 25%. Counter to "downgrade-everything-to-pass" gaming: a draft cannot achieve DAC PASS by relabeling all FACT claims to [事实·弱]/[推断]. Hard data must remain. | Count rows by label |
 
-**Branch**:
 - All five ✓ → write `VERDICT: PASS (DAC)` in Loop Summary, document each criterion's evidence in the DAC Result table.
 - Any ✗ → return to step c and invoke Critic. The Agent tool is always available in the main session.
 
-The only legal verdict strings in this skill are: `PASS (Critic)`, `PASS (DAC)`, `REVISE at MAX_TURNS`, `FAIL`. Anything else is a fabrication.
+The only legal verdict strings in this skill are: `PASS (Orchestrator)`, `PASS (DAC)`, `PASS (Early-exit)`, `REVISE at MAX_TURNS`, `FAIL`. Anything else is a fabrication.
 
 4. **After loop ends** (whether by break or by hitting MAX_TURNS), produce the Final output described below. This output is mandatory — do not skip it.
 
@@ -626,7 +675,7 @@ After the loop ends, produce **this exact structure**. Loop Summary is mandatory
 # Loop Summary
 
 - Turns used: N/MAX_TURNS   (e.g. "3/10")
-- Final verdict: PASS (Critic) | PASS (DAC) | PASS (Early-exit) | REVISE at MAX_TURNS | FAIL
+- Final verdict: PASS (Orchestrator) | PASS (DAC) | PASS (Early-exit) | REVISE at MAX_TURNS | FAIL
 - Verdict path: REVISE → REVISE → PASS   (arrow-joined list; if DAC direct pass, write "DAC-PASS")
 - Severity history: Turn 1 [crit:X maj:Y min:Z] → Turn 2 [...] → ...
 
@@ -642,7 +691,7 @@ After the loop ends, produce **this exact structure**. Loop Summary is mandatory
 
 ## Verdict explanation
 
-- **PASS (Critic)**: Draft approved on turn N. Critic verdict is the authority; DAC is not invoked.
+- **PASS (Orchestrator)**: Orchestrator computed PASS (critical=0, major=0, cm_missing=0) on turn N. DAC is not invoked.
 - **PASS (DAC)**: Critic was never invoked (orchestrator-skipped path); DAC mechanical check passed all five criteria. Evidence in DAC Result table above.
 - **PASS (Early-exit)**: Turn N produced REVISE but step g2 detected two consecutive turns with zero critical/major issues. Remaining minor issues were appended to `# What I Don't Know`.
 - **REVISE at MAX_TURNS**: Hit MAX_TURNS without converging. Unresolved issues from final critic output: [paste unresolved Issues].
@@ -665,8 +714,8 @@ After the loop ends, produce **this exact structure**. Loop Summary is mandatory
 
 - **No research yourself.** This skill's job is routing. If you catch yourself producing analysis or running WebSearch, stop — that's the worker's job.
 - **No editing worker output.** Pass it through verbatim. Do not paraphrase, do not reformat.
-- **No overriding the critic.** If critic says REVISE, loop. The only legal early termination is step g2 (early-exit on diminishing returns), which has explicit numeric criteria.
-- **DAC is fallback only.** Run DAC only when `verdict_path` is empty (Critic was never called). If Critic was called, the Critic's verdict is authoritative.
-- **PASS has three valid paths**: (a) Critic issues `VERDICT: PASS` as first line of `critic_output`; (b) DAC five-criteria check passes when Critic was never invoked; (c) Step g2 early-exit when 2 consecutive turns produced zero critical/major issues. Any other path is a fabrication.
+- **No overriding the orchestrator VERDICT.** If orchestrator computes REVISE, loop. The only legal early termination is step g2 (early-exit on diminishing returns), which has explicit numeric criteria.
+- **DAC is fallback only.** Run DAC only when `verdict_path` is empty (Critic was never called). If Critic was called, the orchestrator VERDICT is authoritative.
+- **PASS has three valid paths**: (a) Orchestrator computes `PASS` (critical=0, major=0, cm_missing=0); (b) DAC five-criteria check passes when Critic was never invoked; (c) Step g2 early-exit when 2 consecutive turns produced zero critical/major issues. Any other path is a fabrication.
 - **Respect MAX_TURNS.** Never loop past MAX_TURNS. If not passing by then, the task needs human attention, not more iteration.
 - **Fail fast on FAIL verdict.** Don't try to rescue a fundamentally broken draft by looping — report and stop.

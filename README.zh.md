@@ -9,7 +9,7 @@
 **cc-research-report 为 Claude Code 研究引入了结构性对抗验证。**
 搜索开始前，Worker 必须先提交自我覆盖计划——5-8 个各带具体可验证标准的子问题（须含数字、命名实体、比较要求、失败案例或时间锚之一）——在任何证据收集前就锁定覆盖目标。随后四轨制搜索驱动起草：主流共识、反驳论据、失败案例、非常规视角，从源头抵抗确认偏差。四个 Critic 作为独立 subagent 并行审计各自轴线，上下文完全隔离，无法被 Worker 的叙事框架先入为主地锚定。
 
-Worker 持有反驳权：对每条批评意见明确表态（接受 / 挑战 / 部分接受），Critic 必须认真回应每一项挑战，不得自动驳回。第 1 轮锁定的覆盖矩阵只能修补、不能重新生成，防止多轮迭代中移动研究目标。Orchestrator 向下一轮传递的 URL 记录仅含 Critic 亲自验证的条目，过滤 Worker 自报来源，阻止未验证 URL 在后续轮次中被当作已确认引用。严重程度历史、轮内重做不变量、研究方向均由 orchestrator 统一管理——任何 agent 都无法将未经验证的状态洗入记录。每条输出结论携带认知标签：`[事实·强]` / `[推断]` / `[领域共识]`。
+Worker 持有反驳权：对每条批评意见明确表态（接受 / 挑战 / 部分接受），Critic 必须认真回应每一项挑战，不得自动驳回。第 1 轮锁定的覆盖矩阵只能修补、不能重新生成，防止多轮迭代中移动研究目标。Orchestrator 向下一轮传递的 URL 记录仅含 Critic 亲自验证的条目，过滤 Worker 自报来源，阻止未验证 URL 在后续轮次中被当作已确认引用。严重程度历史、轮内重做不变量、研究方向均由 orchestrator 统一管理——任何 agent 都无法将未经验证的状态洗入记录。第 1 轮在 Phase A 并行运行五个 critic（覆盖矩阵、URL 验证、推理审计、深度缺口、搜索宽度），Phase A 门控通过后 Phase B 串行运行 instruction-critic（接收预生成的覆盖矩阵和预验证 URL 报告）。VERDICT 由 orchestrator 从 issue 严重程度计数机械计算，不依赖任何 LLM 的"裁决直觉"。每条输出结论携带认知标签：`[事实·强]` / `[推断]` / `[领域共识]`。
 
 | 普通多 Agent 方式 | cc-research-report |
 |---|---|
@@ -79,11 +79,16 @@ cd CC-Reseach-Report
   │    第 1 轮：搜索前先确定自我覆盖计划（5–8 个子问题）
   │    第 2 轮起：对每条批评意见明确表态（接受 / 挑战 / 部分接受）
   │
-  └─ 4 个 Critic 并行运行（每轮）：
-       instruction  →  覆盖矩阵 + URL 验证 + 裁决（VERDICT）
-       dialectic    →  推理审计（特异性、幸存者偏差、推断链、一致性）
-       depth        →  深度缺口 + 新研究方向
-       width        →  搜索日志审计（未覆盖的搜索轨道）
+  └─ Phase A — 并行 critic（Turn 1：5 个 agent；Turn 2+：4 个 agent）：
+       critic-cm       →  覆盖矩阵（仅 Turn 1）
+       critic-url      →  URL 验证（每轮）
+       dialectic       →  推理审计（特异性、幸存者偏差、推断链、一致性）
+       depth           →  深度缺口 + 新研究方向
+       width           →  搜索日志审计（未覆盖的搜索轨道）
+     Phase B — 串行（Phase A 门控通过后）：
+       instruction     →  覆盖验证 + Issues + RDs + Advisory VERDICT
+        ↓
+  Orchestrator 从 issue 严重程度计数机械计算 binding VERDICT
         ↓
   重复直至 VERDICT: PASS 或达到最大轮次
         ↓
@@ -96,20 +101,28 @@ cd CC-Reseach-Report
 
 ### 两个核心原则
 
-1. **对抗验证，而非自我审查。** Worker 从不评判自己的工作。4 个 Critic 各自负责一个独立审计维度，没有任何单一 agent 试图包揽一切。
+LLM 单次研究的核心病灶有两个：**自我审查盲区**（作者无法发现自己框架中的缺口）和**被质询时的重新合理化**（受到批评时，模型会为已有答案辩护而非真正更新）。这两个失败模式互相叠加：看不到盲区的模型，在被批评时会流利地为盲区辩护。
 
-2. **机械门控，而非提示嘱咐。** LLM 在被"友善地要求"时，会可靠地跳过结构性要求。每一个关键不变量都有编排层级的门控，失败时强制重做。[CHANGELOG](CHANGELOG.md) 记录了 20+ 个补丁，全部遵循同一模式：*提示失败 → 添加门控*。
+下面两条原则各自用结构性设计修复一种病灶——而非依赖提示词嘱咐。
+
+1. **对抗验证，而非自我审查。** Worker 从不评判自己的工作。4 个 Critic 各自负责一个独立审计维度，没有任何单一 agent 试图包揽一切。*对应病灶：自我审查盲区。*
+
+2. **机械门控，而非提示嘱咐。** LLM 在被"友善地要求"时，会可靠地跳过结构性要求。每一个关键不变量都有编排层级的门控，失败时强制重做。[CHANGELOG](CHANGELOG.md) 记录了 20+ 个补丁，全部遵循同一模式：*提示失败 → 添加门控*。*对应病灶：被质询时的重新合理化——数学不会被说服。*
 
 ### Critic 分工
 
 | Agent | 模型 | 职责 |
 |-------|------|------|
 | `research-worker` | Sonnet | 起草、搜索、自审、反驳 Critic 意见 |
-| `research-critic-instruction` | Opus | 覆盖矩阵、URL 验证（WebFetch + Playwright）、Worker 反驳裁定。**发出 VERDICT。** |
+| `research-critic-cm` | Opus | 覆盖矩阵（仅 Turn 1，Phase A）：Stage A 头脑风暴 ≥10 → Stage B 批判 → Retention Map → Final CM |
+| `research-critic-url` | Sonnet | URL 验证（每轮，Phase A）：WebFetch/Playwright 所有 Evidence Table URL → `# Critic WebFetch Audit` + `# URL Verification Report` |
+| `research-critic-instruction` | Opus | 覆盖验证、Issues（I- 前缀）、深化问题、研究方向、Worker 反驳裁定。发出 **Advisory VERDICT**（非 binding，仅供调试）。运行于 Phase B。 |
 | `research-critic-dialectic` | Opus | 推理审计：特异性、幸存者偏差、推断链、内部一致性 |
 | `research-critic-depth` | Opus | 深度缺口分析，每轮生成新的研究方向 |
 | `research-critic-width` | Opus | 搜索日志审计——标记 Worker 计划了但未执行的搜索轨道 |
 | `research-html-formatter` | Opus | 将经验证的 Markdown 渲染为设计驱动的 HTML |
+
+binding VERDICT 由 orchestrator 从 issue 严重程度计数机械计算（`critical > 0 → FAIL；major == 0 且 cm_missing == 0 → PASS；否则 REVISE`），不来自任何 critic。
 
 如需更改某个 agent 使用的模型，编辑其 frontmatter 中的 `model:` 字段（`agents/*.md`），重启 Claude Code 生效：
 
@@ -179,10 +192,13 @@ cc-research-report/
 │   ├── research-report/
 │   │   └── SKILL.md              # 流水线编排器（第 0→1→2 步）
 │   └── research-loop/
-│       └── SKILL.md              # worker↔critic 循环及所有机械门控
+│       ├── SKILL.md              # worker↔critic 循环及所有机械门控
+│       └── gates.py              # W1–W6 + CM 门控 + URL 门控验证逻辑
 ├── agents/
 │   ├── research-worker.md
-│   ├── research-critic-instruction.md
+│   ├── research-critic-cm.md           # Phase A，仅 Turn 1
+│   ├── research-critic-url.md          # Phase A，每轮
+│   ├── research-critic-instruction.md  # Phase B，串行
 │   ├── research-critic-dialectic.md
 │   ├── research-critic-depth.md
 │   ├── research-critic-width.md
