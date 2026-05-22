@@ -359,18 +359,23 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       **Check 5 — Invariant drift detection (only applies when a redo cache exists from prior attempt this turn)**:
 
-      If this Critic attempt is a redo (i.e., orchestrator triggered redo for Checks 1-4 and injected cached invariants in the redo prompt), verify each cached section was preserved verbatim in the current output.
+      If this Critic attempt is a redo (i.e., orchestrator triggered redo for Checks 1-4 and injected cached invariants in the redo prompt), verify each cached section was preserved in the current output.
 
-      **Core comparison rule** (applies to all cached sections):
+      **Coverage Matrix drift (Python check)**:
+      Write prior Critic attempt to `/tmp/rl-critic-prior-t{turn}.md` and current Critic attempt to `/tmp/rl-critic-current-t{turn}.md`, then run:
+      `python3 ~/.claude/skills/research-loop/gates.py coverage-matrix-drift /tmp/rl-critic-prior-t{turn}.md /tmp/rl-critic-current-t{turn}.md`
+      Compares cell values only — table alignment and whitespace differences are ignored (PASS). Any change to existing row content is FAIL; adding new rows is PASS. Output lines 2+ name the specific row/column that drifted.
+
+      **All other cached sections** — apply the core comparison rule:
 
       1. For each cached invariant section, extract the corresponding section from the current `critic_output`.
       2. Normalize whitespace on both cached and current content (collapse multiple spaces/tabs to single space, trim trailing whitespace per line, strip leading/trailing blank lines from sections).
       3. Compare the normalized strings.
-      4. If any cached section differs from current section beyond minor markdown formatting tolerance (e.g., bold markers, table alignment changes are OK; sub-question text changes, severity changes, RD body content changes, fetched URL status changes are NOT OK):
+      4. If any cached section differs from current section beyond minor markdown formatting tolerance:
          - Gate fail with reason: `Invariant drift detected: {section name}. Prior attempt content differs from current attempt content. Critic regenerated instead of preserving.`
          - Trigger redo (counts toward max 2).
 
-      **Specific drift cases that always trigger fail (extends the core rule)**:
+      **Specific drift cases that always trigger fail (extends the core rule for non-matrix sections)**:
 
       ### 5a — Reasoning Audit structural stability
 
@@ -392,7 +397,6 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       ### Existing specific drift cases (preserved from prior patch)
 
-      - Coverage Matrix sub-question text changed (Turn 1 only; affects all downstream turns)
       - Issue severity changed without explicit Worker rebuttal acceptance
       - RD body's substantive content changed (e.g., named entity / number / framework switched)
       - Already-Critic-verified URL status changed from `Yes — Turn N` to anything else

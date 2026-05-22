@@ -237,6 +237,92 @@ def check_w6(draft: str) -> tuple[bool, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Coverage Matrix drift check (compares prior vs current Critic output)
+# ---------------------------------------------------------------------------
+
+def _parse_table_cells(text: str) -> list[list[str]]:
+    """Parse a markdown table into rows of stripped cell values, skipping header/separator."""
+    rows: list[list[str]] = []
+    header_seen = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith('|'):
+            continue
+        # Separator row: only contains |, -, spaces
+        if re.match(r'^[\|\-\s]+$', stripped):
+            continue
+        cells = [c.strip() for c in stripped.split('|')]
+        # Remove empty leading/trailing from surrounding |
+        if cells and cells[0] == '':
+            cells = cells[1:]
+        if cells and cells[-1] == '':
+            cells = cells[:-1]
+        if not cells:
+            continue
+        if not header_seen:
+            header_seen = True
+            continue  # Skip header row
+        rows.append(cells)
+    return rows
+
+
+def check_coverage_matrix_drift(prior_path: str, current_path: str) -> tuple[bool, list[str]]:
+    """
+    Compare Coverage Matrix cell values between prior and current Critic output.
+    Existing rows must not change (content only — formatting ignored).
+    Adding new rows (patches) is allowed.
+
+    Looks for ## Final Coverage Matrix first, falls back to # Coverage Matrix.
+    """
+    prior_md = _load(prior_path)
+    current_md = _load(current_path)
+
+    def _get_matrix(text: str) -> str:
+        s = _extract_section(text, '## Final Coverage Matrix')
+        if not s:
+            s = _extract_section(text, '# Coverage Matrix')
+        return s
+
+    prior_section = _get_matrix(prior_md)
+    current_section = _get_matrix(current_md)
+
+    if not prior_section:
+        return True, []  # Nothing to compare against
+
+    if not current_section:
+        return False, ['Coverage Matrix section missing from current attempt']
+
+    prior_rows = _parse_table_cells(prior_section)
+    current_rows = _parse_table_cells(current_section)
+
+    if not prior_rows:
+        return True, []
+
+    col_names = ['#', '子问题', '充分覆盖标准', 'Origin', 'Verifier tags']
+
+    violations: list[str] = []
+    for i, prior_row in enumerate(prior_rows):
+        if i >= len(current_rows):
+            row_id = prior_row[0] if prior_row else str(i + 1)
+            violations.append(f'Row {row_id}: present in prior attempt but missing in current')
+            continue
+        current_row = current_rows[i]
+        max_cols = max(len(prior_row), len(current_row))
+        for j in range(max_cols):
+            prior_cell = prior_row[j] if j < len(prior_row) else ''
+            current_cell = current_row[j] if j < len(current_row) else ''
+            if prior_cell != current_cell:
+                col_label = col_names[j] if j < len(col_names) else f'col{j + 1}'
+                row_id = prior_row[0] if prior_row else str(i + 1)
+                violations.append(
+                    f'Row {row_id} / {col_label}: '
+                    f'prior="{prior_cell[:60]}" → current="{current_cell[:60]}"'
+                )
+
+    return (len(violations) == 0), violations
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -251,16 +337,28 @@ GATES = {
 
 
 def main() -> None:
+    gate_name = sys.argv[1].lower() if len(sys.argv) > 1 else ''
+
+    # Two-file drift check has a different signature
+    if gate_name == 'coverage-matrix-drift':
+        if len(sys.argv) < 4:
+            sys.stderr.write('Usage: gates.py coverage-matrix-drift <prior_file> <current_file>\n')
+            sys.exit(2)
+        ok, violations = check_coverage_matrix_drift(sys.argv[2], sys.argv[3])
+        print('PASS' if ok else 'FAIL')
+        for v in violations:
+            print(v)
+        return
+
     if len(sys.argv) < 3:
         sys.stderr.write('Usage: gates.py <gate> <draft_file> [turn]\n')
         sys.exit(2)
 
-    gate_name = sys.argv[1].lower()
     draft_path = sys.argv[2]
     turn = int(sys.argv[3]) if len(sys.argv) > 3 else 1
 
     if gate_name not in GATES:
-        sys.stderr.write(f'Unknown gate: {gate_name}. Valid: {", ".join(GATES)}\n')
+        sys.stderr.write(f'Unknown gate: {gate_name}. Valid: {", ".join(GATES)}, coverage-matrix-drift\n')
         sys.exit(2)
 
     draft = _load(draft_path)
