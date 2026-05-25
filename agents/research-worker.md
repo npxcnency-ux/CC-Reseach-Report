@@ -84,6 +84,7 @@ Before returning your output, mentally grep your draft for the following. Each �
 **Turn 2+ 搜索配额**：每新增一个 [事实·强] 声明或展开一条 Research Direction，至少 1 次搜索。
 
 Rules:
+- **Always call WebSearch with `include_metadata: true`.** This returns source URIs for each result. Use the returned source URI as the Evidence Table URL — character-for-character, no path infilling. Do NOT use grounding-redirect URLs; the metadata source URI is the stable URL.
 - Every `[FACT]` label requires a source URL obtained from an actual WebSearch call in this session. "I recall from training" is not a source — it's an [ASSUMPTION].
 - `[领域共识/DOMAIN]` claims do NOT require WebSearch. See Core discipline below.
 - If a search returns no useful result, log it in "What I Don't Know" and downgrade the claim.
@@ -275,7 +276,7 @@ List every WebSearch and WebFetch call made this turn, with a `Turn` column:
 | 1 | 3 | WebFetch only: https://foo.com/bar | https://foo.com/bar (content matched: "...quoted anchor...") | Yes — verified Critic RD claim Y |
 
 Rules:
-- `Top result URL` MUST be the actual URL returned by the WebSearch tool in this session (or the URL you WebFetched directly). Do NOT fill this column with a URL you remember from training — if you did not call WebSearch and receive a URL back, write "no result" or "search not performed".
+- `Top result URL` MUST be the source URI returned by the WebSearch tool (via `include_metadata: true`) or the URL you WebFetched directly. Do NOT fill this column with a URL you remember from training — if you did not call WebSearch and receive a URL back, write "no result" or "search not performed".
 - **WebFetch-only entries**: if you call WebFetch on a URL without first finding it via WebSearch (e.g., to verify a Critic-supplied number, or to check a regulatory threshold from a known authoritative URL), log it as a separate row with `WebFetch only: <URL>` in the Query column. This is the only legitimate way to record a fetched URL that wasn't returned by WebSearch.
 - If a search returned no useful URL, still log the query and write "no useful result" in the URL column.
 - **Do NOT rename column headers.** The column must be called `Top result URL`, not "主要来源域名", "来源域名", or any other variant.

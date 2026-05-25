@@ -122,7 +122,11 @@ LLM 单次研究的核心病灶有两个：**自我审查盲区**（作者无法
 | `research-critic-width` | Opus | 搜索日志审计——标记 Worker 计划了但未执行的搜索轨道 |
 | `research-html-formatter` | Opus | 将经验证的 Markdown 渲染为设计驱动的 HTML |
 
-binding VERDICT 由 orchestrator 从 issue 严重程度计数机械计算（`critical > 0 → FAIL；major == 0 且 cm_missing == 0 → PASS；否则 REVISE`），不来自任何 critic。
+binding VERDICT 由 orchestrator 分四步机械计算，不来自任何 critic：
+1. **d.1 Type B 自动降级**：纯内容缺口类 critical（含 missing/absent/缺失语言，无 URL 失效或内部矛盾证据）自动降为 major。
+2. **d.2 Turn-gated severity**：Turn 1 有效 critical 计数强制归零——首轮永远不触发 FAIL。
+3. **d.3 Issue 去重**：同一段落被多个 critic 标注（`Where:` 字段 ≥40 字符重叠）只计一次，优先保留 I- 前缀。
+4. **d.4 最终公式**（基于有效计数）：`effective_critical > 0 → FAIL；effective_major == 0 且 cm_missing == 0 → PASS；否则 REVISE`。
 
 如需更改某个 agent 使用的模型，编辑其 frontmatter 中的 `model:` 字段（`agents/*.md`），重启 Claude Code 生效：
 

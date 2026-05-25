@@ -122,7 +122,11 @@ The two principles below address each pathology with a structural fix — not a 
 | `research-critic-width` | Opus | Search Log audit — flags topical tracks the worker planned but didn't execute |
 | `research-html-formatter` | Opus | Renders verified markdown to design-driven HTML |
 
-The binding VERDICT is computed by the orchestrator from issue severity counts (`critical > 0 → FAIL; major == 0 AND cm_missing == 0 → PASS; else REVISE`) — not issued by any agent.
+The binding VERDICT is computed by the orchestrator in four steps — not issued by any agent:
+1. **d.1 Type B auto-purge**: content-gap criticals (missing/absent language with no URL-failure or internal-contradiction evidence) are auto-downgraded to major.
+2. **d.2 Turn-gated severity**: Turn 1 effective critical count is forced to 0 — first pass never triggers FAIL.
+3. **d.3 Issue deduplication**: same passage flagged by multiple critics (≥40 char `Where:` overlap) counts once; I-prefix takes priority.
+4. **d.4 Final formula** (from effective counts): `effective_critical > 0 → FAIL; effective_major == 0 AND cm_missing == 0 → PASS; else REVISE`.
 
 To change the model for any agent, edit the `model:` line in its frontmatter (`agents/*.md`) and restart Claude Code:
 

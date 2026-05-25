@@ -62,14 +62,16 @@ WebFetch is the default — it's fast and cheap. But it has known limitations: *
 | ✗ 403 / Cloudflare challenge page / Akamai bot detection page | Bot blocked | Escalate to Playwright (real browser usually passes) |
 | ✗ 401 / paywall login form | Auth required | Mark failed; cannot escalate without credentials |
 | ✗ 404 (real, server-issued) | Hard fail | Do NOT escalate; mark as `✗ 404` |
-| ✗ timeout | Server unreachable | Try Playwright once; if also timeout, mark as failed |
+| ✗ timeout | Server unreachable | Try Playwright once with extended wait (5s); if still timeout, mark as failed |
+| **Playwright already attempted, snapshot still < 500 chars or still contains `Loading` / `Just a moment...` / Cloudflare Turnstile / `Verifying you are human`** | **Headless Chromium detected by anti-bot** | **Mark `headless-blocked — cannot verify`. Do NOT downgrade the claim to [假设]/[ASSUMPTION] — the URL may be valid; the Critic just can't reach it. Recommend Worker substitute a stable, fetchable URL (e.g., archive.org snapshot, mirror, PDF on different host) or downgrade to [推断] with explicit "source unverifiable due to anti-bot, content directionally consistent with [领域共识]"** |
 
 How to call Playwright (one URL at a time):
 1. `mcp__plugin_playwright_playwright__browser_navigate` with the URL
 2. Wait briefly with `mcp__plugin_playwright_playwright__browser_wait_for` (e.g., 2 seconds, or wait for specific text)
 3. `mcp__plugin_playwright_playwright__browser_snapshot` to get the rendered accessibility tree
 4. Check if rendered content matches the claim's expected anchor (≤20-word quote)
-5. Update Critic WebFetch Audit row with `Tool used = WebFetch + Playwright (escalated)`, status reflecting the Playwright result
+5. **Headless-blocked check**: if the snapshot is still < 500 chars, contains only `Loading...` / `Just a moment...` / Cloudflare Turnstile widget / `Verifying you are human`, OR the page title is generic challenge text — the anti-bot has identified headless Chromium. Mark `headless-blocked — cannot verify` per the escalation-table row above. Do NOT loop retry; one Playwright attempt is the budget.
+6. Update Critic WebFetch Audit row with `Tool used = WebFetch + Playwright (escalated)`, status reflecting the Playwright result (`✓ 200 (rendered)` / `headless-blocked` / `✗ failed`)
 
 Cost discipline: Playwright is much more expensive than WebFetch. Do NOT escalate every URL by default — only when WebFetch produced a suspicious signal per the table above.
 
@@ -83,6 +85,7 @@ Cost discipline: Playwright is much more expensive than WebFetch. Do NOT escalat
 | 2 | https://... | ✗ 404 | Critic-verified Turn N | N/A — page not found | Downgrade to [假设] / [ASSUMPTION] |
 | 3 | https://... | ✓ 200 | Worker-claimed (NOT yet Critic-verified) | Critic must fetch this turn | (action depends on fetch result) |
 | 4 | https://... | ✓ 200 | Critic-verified Turn N-1 (skipped this turn, claim unchanged) | (cached) | (cached) |
+| 5 | https://... | headless-blocked | Critic-attempted Turn N (WebFetch + Playwright both blocked by anti-bot) | Unverifiable — not falsified | **Do NOT downgrade to [假设].** Recommend Worker substitute alternate URL (archive.org / mirror / PDF) OR relabel as [推断] with note "source exists but unverifiable due to anti-bot challenge" |
 
 Total: N URLs checked · M passed · K failed or mismatched → K labels downgraded.
 

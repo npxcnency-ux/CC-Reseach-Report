@@ -53,6 +53,23 @@ Look for:
 (Optional RD3 if a third important direction exists)
 ```
 
+## Mechanical Severity Taxonomy (enforced — not optional)
+
+**critical** — Use ONLY when ALL of the following are true:
+1. A claim is labeled `[事实·强]`/`[FACT]`; AND
+2. A WebFetch result OR another specific passage in the same draft directly contradicts it; AND
+3. The contradiction is externally verifiable, not an interpretive difference.
+
+**major** — The correct severity for ALL depth gaps:
+- Missing sections, missing data points, missing quantification
+- Shallow analysis that needs more depth
+- Missing counterarguments, failure modes, or concrete examples
+- A topic covered in one sentence that deserves a paragraph
+
+**minor** — Suggestions and non-essential improvements that don't block reliability.
+
+**Discipline test**: Before labeling any issue `critical`, ask: "Can I point to a specific sentence that is factually WRONG — contradicted by an external source or by another passage in this draft?" If the answer is "no — it's just missing" or "no — it's just not deep enough" → label it `major`. A missing section, no matter how important, is NEVER `critical`.
+
 ## Discipline
 
 - Issue numbering: E-1, E-2, E-3, ... (E prefix = dEpth)

@@ -9,6 +9,50 @@ Changes here document semantic / behavioral changes — not formatting tweaks. R
 
 ---
 
+## 2026-05-22 — VERDICT 计算四层防御 — 消除 Turn 1 虚假 FAIL
+
+### Why this change
+
+Turn 1 critics 将"内容缺口"标注为 `critical` 严重程度，导致 orchestrator `critical > 0 → FAIL` 公式在 Turn 1 直接触发 FAIL。这是虚假 FAIL：内容缺口（"Copilot Agent Mode 未提及"、"跨服务调试场景缺失"等）是 Worker 需要在下一轮补充的改进点，而非阻断流水线的结构性错误。
+
+根因：各 Critic 对 `critical` 的使用缺乏约束。depth/dialectic/width critic 将内容质量问题与 URL 失效、内部矛盾等结构性错误同等标注为 critical，导致原本应 REVISE 的轮次直接 FAIL。
+
+### What changed
+
+**四层防御机制**（d.1–d.4，在 `skills/research-loop/SKILL.md` 步骤 d 中实现）：
+
+- **d.1 Type B 自动降级**：orchestrator 检测 critical Issues 文本，若包含 `missing/absent/缺失/未提及` 等内容缺口关键词，且无 WebFetch 失败 / URL 失效 / 内部矛盾的 Type A 信号，自动降级为 major。
+- **d.2 Turn-gated severity**：Turn 1 的 `effective_critical_count` 固定为 0，不允许 Turn 1 触发 FAIL。Turn 1 是首次尝试，深度不足属于预期内；FAIL 只应在 Turn 2+ Worker 已知问题后仍未修复时发生。
+- **d.3 Issue 去重**：同一文本段落被多个 critics 同时标注时（`Where:` 字段 ≥40 字符重叠），只计数一次（优先保留 I- 前缀）。防止同一问题因被三个 critic 标注而将 major 计数 ×3。
+- **d.4 最终 VERDICT**：基于 d.1+d.2+d.3 处理后的 effective counts 计算：`effective_critical > 0 → FAIL; effective_major == 0 AND cm_missing == 0 → PASS; else REVISE`。
+
+**`agents/research-critic-{depth,dialectic,width,instruction}.md`（修改）**：
+
+各 critic 新增 Mechanical Severity Taxonomy，明确限定 `critical` 的合法使用范围：
+- instruction-critic：仅 3 种合法 critical 用途（`[事实·强]` URL 验证失败、Critic-RD 内容洗白、Turn 2+ 缺少 Rebuttals）
+- dialectic-critic：Tier 1 排除规定——内容缺口（missing sections/data/counterarguments）永远不是 critical
+- depth-critic：critical 仅限于 `[事实·强]` 声明被 WebFetch 内容矛盾或内部段落明确相悖
+- width-critic：Width gaps 永远不是 critical（搜索覆盖缺口 ≤ major）
+
+### Design notes
+
+四层防御的层次设计：Critic-level taxonomy 是上游预防（防止 Type B criticals 产生）；d.1 是下游兜底（即使 taxonomy 未生效也能捕获）；d.2 是硬保障（Turn 1 永不 FAIL）；d.3 减少计数噪音。Advisory VERDICT（instruction-critic 末尾）与 orchestrator 计算 VERDICT 的分歧在这种设计下有诊断价值：分歧 = d.1/d.2/d.3 介入了 Type B criticals，可监测 critic 是否仍在过度产生 critical Issues。
+
+### Validation results (2026-05-22, topic: "Claude Code vs GitHub Copilot 核心设计差异", max_turns=1)
+
+| 验证项 | 结果 |
+|--------|------|
+| raw critical Issues（四 critic 合计） | 4（D-1 内部矛盾、I-2/I-3 URL 失效、E-5 内容缺口） |
+| d.1 Type B 降级 | E-5 降级（"Copilot Agent Mode 完全未提及" = 纯内容缺口，无 Type A 信号） |
+| d.2 Turn 1 gate | effective_critical_count = 0（Turn 1 自动归零） |
+| d.3 去重 | 无跨 critic 重叠需去重 |
+| Orchestrator VERDICT | `REVISE（effective_critical=0 [d.1/d.2/d.3后]，major=13，cm_missing=0；raw_critical=4）` |
+| Advisory VERDICT（instruction-critic）| `PASS`（分歧：advisory 对 URL 失效问题估计偏低） |
+
+Turn 1 正确输出 REVISE 而非 FAIL，四层防御均按预期工作。
+
+---
+
 ## 2026-05-22 — Instruction-critic split + orchestrator-computed VERDICT
 
 ### Why this change

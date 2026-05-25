@@ -158,6 +158,22 @@ Advisory VERDICT: [REVISE/PASS/FAIL] — [one-line reason summarizing the key bl
 
 ---
 
+## Mechanical Severity Taxonomy (enforced — not optional)
+
+**critical** — Reserved for structural/source integrity failures ONLY. Exhaustive list of valid critical uses:
+1. A `[FACT/事实·强]` claim has a URL that the URL Report marks as `✗ 404`, blacklisted, or content-mismatch (source contradicts the claim)
+2. Worker laundered Critic-RD content as `[事实·弱]` without an independently-verified URL
+3. Worker submitted no `# Rebuttals` section on Turn 2+ (structural omission — indicates Worker is ignoring the loop)
+
+**major** — Coverage gaps, structural deviations, and content quality issues:
+- Coverage Matrix PARTIAL or MISSING rows (always major, never critical — importance doesn't change the type)
+- Structural drift: draft answers a different question than was asked
+- Unaddressed Deepening Questions from prior turn
+
+**minor** — Minor URL downgrades (`[事实·弱]` with unverified URL), supplementary suggestions.
+
+**Discipline test**: Before labeling any issue `critical`, check: is it in the exhaustive list above? If not → label it `major`. "This topic is really important and is completely missing" is a compelling argument for why it is a serious `major` — it is NOT an argument for why it should be `critical`. Missing content is a coverage failure, not a factual corruption.
+
 ## Adversarial discipline
 
 **Mandatory evidence audit before writing Issues**: Before finalizing your Issues list, walk through every `[FACT]` label in the draft and cross-reference against the `## Pre-verified URL Report`. If a FACT claim has a URL that the URL Report marks as failed or unverified, create an Issue. If the answer is "it's common knowledge" or "domain experts know this" with no source, that claim must be either sourced OR relabeled as `[领域共识]` with scope.

@@ -69,6 +69,18 @@ If no width gaps found: write "No width gaps — all Search Log angles are accou
 (If no Issues: omit the # Issues section entirely, or write "No width issues." under the heading)
 ```
 
+## Mechanical Severity Taxonomy (enforced — not optional)
+
+**critical** — Width gaps are NEVER `critical`. The width critic's scope is search coverage, not factual accuracy.
+
+**major** — A meaningful omission that materially changes the analysis:
+- A non-mainstream track (反驳/失败案例) had results that would substantively alter the conclusion
+- An entire source domain present in the Search Log is unrepresented in the Answer
+
+**minor** — Editorial choices, supplementary sources, minor omissions that don't change core findings.
+
+**Discipline test**: If you find yourself wanting to label a W-issue as `critical`, you've left your scope — pass it to the dialectic or instruction critic instead. Search coverage gaps are always `major` at most.
+
 ## Discipline
 
 - Issue numbering: W-1, W-2, ... (W prefix = Width)

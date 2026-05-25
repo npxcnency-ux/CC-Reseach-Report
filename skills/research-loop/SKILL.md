@@ -580,10 +580,43 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
    d. **Compute VERDICT** (orchestrator-side, mechanical — does not depend on any LLM output line):
 
+      Run the following four sub-steps in order before computing the final VERDICT.
+
+      ### d.1 — Type B auto-purge (content-gap issues cannot be critical)
+
+      Collect all `## Issue` sub-headings in merged `critic_output`'s `# Issues` section whose body contains `Severity: critical` or `Severity**: critical`.
+
+      For each such issue, check whether it is a **Type B** (content gap) issue:
+      - **Type B signal**: the issue body contains one or more of these keywords/phrases AND contains NO reference to a WebFetch result URL, HTTP status code, or a specific internal contradiction between two named passages: `missing`, `缺失`, `缺乏`, `未覆盖`, `未提供`, `未包含`, `no data`, `should include`, `should cover`, `整节缺失`, `节缺失`, `此节`, `Coverage Matrix.*MISSING`, `MISSING`, `not addressed`
+      - **Type A signal**: the issue body explicitly references a WebFetch URL contradiction (`WebFetch`, `HTTP`, `✗`, `URL`, `http`, `contradicts`, `contradiction`, `内部矛盾`, `互相矛盾`, `claim contradicted`) OR a specific `claim 3 contradicts claim 7`-style internal inconsistency.
+
+      If an issue shows Type B signal AND no Type A signal → **auto-downgrade**: treat this issue as `major` for all VERDICT computation below. Log: `d.1 purge: Issue {ID} downgraded critical→major (content gap is never critical)`.
+
+      **This does NOT rewrite the Critic's output text** — it adjusts the effective count only.
+
+      ### d.2 — Turn-gated severity (Turn 1 never triggers FAIL)
+
+      If `turn == 1`: set `effective_critical_count = 0` for FAIL determination, regardless of how many critical issues survived d.1. All surviving criticals are treated as majors for this turn's VERDICT computation.
+
+      Log: `d.2 turn-gate: Turn 1 — N critical issue(s) treated as major (Turn 1 FAIL is almost always a false positive on first-pass drafts; these will be re-evaluated on Turn 2 with revised content)`.
+
+      If `turn >= 2`: `effective_critical_count = count of issues that survived d.1 purge with critical severity`.
+
+      ### d.3 — Issue deduplication (same root cause from multiple critics counts once)
+
+      Before computing counts, deduplicate critical issues that multiple critics raised for the same underlying claim:
+      - Collect all `## Issue` sub-headings (across D-, E-, I-, W- prefixes) with effective `critical` severity.
+      - For each pair of critical issues from DIFFERENT critic prefixes: if their `**Where**:` quote fields share a substring of ≥ 40 characters, OR if one `**Where**` quote is a substring of the other — they reference the same passage and are duplicates.
+      - Keep 1 representative issue per duplicate group (prefer I- prefix if present, else the most specific description). Log: `d.3 dedup: Issues {X} and {Y} deduplicated — same passage referenced`.
+
+      `effective_critical_count` after dedup = count of distinct critical issues after removing duplicates.
+
+      ### d.4 — Final VERDICT computation
+
       ```
-      critical_count = count of ## Issue sub-headings in merged critic_output's # Issues section
-                        whose body contains "Severity: critical" or "Severity**: critical"
-      major_count    = same but "Severity: major"
+      critical_count = effective_critical_count (after d.1 purge + d.2 turn-gate + d.3 dedup)
+      major_count    = count of all ## Issue sub-headings with effective Severity: major
+                       (includes d.1 downgraded issues; includes d.2 turned-to-major issues)
       missing_count  = count of rows in # Coverage Verification table whose Status column = "MISSING"
 
       IF critical_count > 0:
@@ -594,7 +627,7 @@ In other words: **cached invariants = sections from prior attempt that weren't t
           VERDICT = REVISE
       ```
 
-      Record the computation in the turn log: `Orchestrator VERDICT: {X} (critical={C}, major={M}, cm_missing={N})`.
+      Record the computation in the turn log: `Orchestrator VERDICT: {X} (critical={C} [effective after d.1/d.2/d.3], major={M}, cm_missing={N}, raw_critical={R})`.
 
       The `Advisory VERDICT:` line from `critic_instruction_output` (at the end of that output) is saved for debugging comparison only — it does NOT control the loop.
 

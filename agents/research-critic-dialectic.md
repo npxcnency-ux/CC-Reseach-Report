@@ -23,6 +23,8 @@ You audit ONE thing: reasoning quality. You do NOT:
 - Conclusion doesn't follow — evidence supports X, answer says Y
 - Unsubstantiated [FACT] labels — claim labeled FACT but source doesn't support it
 
+**Tier 1 exclusion — content gaps are NEVER critical**: Missing sections, missing data, missing quantification, missing counterarguments — these are depth/coverage issues (Tier 2 at most). `critical` requires a specific sentence that is factually WRONG or internally contradictory. "This section doesn't exist" is not a logical error — do not label it critical.
+
 ### Tier 2: bias patterns (major)
 - Survivorship bias — sample is "what was searchable/visible," conclusion generalized to universe
 - Confirmation bias — worker defending prior conclusion, new evidence being reframed
