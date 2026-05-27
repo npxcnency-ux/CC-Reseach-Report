@@ -41,6 +41,14 @@ cd CC-Reseach-Report
 /plugin install frontend-design
 ```
 
+**Also install the gate CLI** (used by the worker for mechanical draft validation):
+
+```bash
+uv tool install -e ./skills/research-loop
+# Ensures `research-loop-gate` is on PATH (uv places it under ~/.local/bin).
+# If `~/.local/bin` is not on your PATH, run `uv tool update-shell` and restart your shell.
+```
+
 ---
 
 ## Usage
@@ -169,12 +177,23 @@ Worker defaults to **Sonnet** (better URL fetch discipline, ~half the cost of Op
 
 ## What it doesn't do
 
-- It can't access proprietary, paywalled, or internal knowledge bases
-- It doesn't retrieve real-time data — published content only
-- English-language sources structurally dominate web search; non-English research topics may show shallower coverage of local literature
-- The 4-track search strategy (mainstream / counterargument / failure / unconventional) systematically underexecutes tracks 3–4 in practice; depth critic flags gaps but the skew is structural
-- No cross-session memory — each `/research-report` invocation is independent
-- Turn 1 Self Coverage Plan redo is near-universal regardless of model — budget an extra sub-turn; this is a known structural limitation
+Three categories — separated because they imply different mitigations.
+
+**Structural (won't be fixed by better prompting)**
+
+- Search-engine ranking and LLM training distribution both favor mainstream content. Even when track-3 (failure cases) and track-4 (unconventional angles) queries are well-formed, returned results and the worker's interpretation of them skew toward majority framing. This is the real ceiling on counter-perspective coverage.
+- Turn 1 Self Coverage Plan redo is near-universal regardless of model — budget an extra sub-turn.
+
+**Data-source limits (would change with a different input layer)**
+
+- No access to proprietary, paywalled, or internal knowledge bases — public web only.
+- No real-time data; published content only.
+- English-language sources dominate web search; non-English topics show shallower coverage of local literature.
+
+**By design (explicit choices, not failures)**
+
+- Stateless across invocations — each `/research-report` runs independently with no cross-session memory.
+- 4-track search uses soft prompt allocation, not a mechanical row-count gate. Tracks 3–4 underexecute in practice; a W7-style gate (analogous to W3) is technically straightforward but rejected as default — forcing minimum rows tends to produce low-quality filler. The depth critic flags genuine gaps downstream.
 
 ---
 
@@ -182,6 +201,7 @@ Worker defaults to **Sonnet** (better URL fetch discipline, ~half the cost of Op
 
 - [Claude Code](https://claude.com/claude-code)
 - [`frontend-design` plugin](https://github.com/anthropics/claude-plugins-official)
+- [`uv`](https://docs.astral.sh/uv/) — to install the `research-loop-gate` CLI
 - Internet access for web search
 
 ---
@@ -197,7 +217,8 @@ cc-research-report/
 │   │   └── SKILL.md              # pipeline orchestrator (Step 0→1→2)
 │   └── research-loop/
 │       ├── SKILL.md              # worker↔critic loop, all mechanical gates
-│       └── gates.py              # W1–W6 + CM gate + URL gate validation logic
+│       ├── gates.py              # W1–W6 + CM gate + URL gate validation logic
+│       └── pyproject.toml        # packages gates.py as the `research-loop-gate` CLI
 ├── agents/
 │   ├── research-worker.md
 │   ├── research-critic-cm.md           # Phase A, Turn 1 only

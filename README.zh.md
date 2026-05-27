@@ -41,6 +41,14 @@ cd CC-Reseach-Report
 /plugin install frontend-design
 ```
 
+**另外安装 gate CLI**（worker 机械校验草稿时调用）：
+
+```bash
+uv tool install -e ./skills/research-loop
+# 安装后 `research-loop-gate` 命令应出现在 PATH 上（uv 默认装到 ~/.local/bin）
+# 如果 `~/.local/bin` 不在 PATH，运行 `uv tool update-shell` 后重启 shell。
+```
+
 ---
 
 ## 使用方式
@@ -169,11 +177,23 @@ Worker 默认使用 **Sonnet**（URL 抓取纪律更好，成本约为 Opus 的�
 
 ## 局限性
 
-- 无法访问专有、付费墙或内部知识库
-- 仅获取已发布内容，不是实时数据流
-- 网络搜索在结构上偏向英文；非英文研究主题对当地文献的覆盖可能较浅
-- 4 轨道搜索策略在实际执行中系统性地少执行第 3–4 轨道；这是结构性偏斜，无法通过提示修复
-- 每次 `/research-report` 调用都是独立的，不会在先前会话的基础上构建
+分三类——分开列是因为应对方式不同。
+
+**结构性（更好的 prompt 也修不掉）**
+
+- 搜索引擎排名和 LLM 训练分布都偏向 mainstream 内容。即便第 3-4 轨道（失败案例 / 非常规视角）的查询构造合理，返回结果和 worker 对它们的解读仍会向多数派框架收敛。这才是反观点覆盖的真实上限。
+- Turn 1 Self Coverage Plan 几乎必然 redo（无论用哪个模型）——需要为这个额外子轮预留预算。
+
+**数据源限制（换数据源就消失）**
+
+- 无法访问专有、付费墙或内部知识库——只用公开 web。
+- 不是实时数据流，仅获取已发布内容。
+- 网络搜索在结构上偏向英文；非英文研究主题对本地文献覆盖较浅。
+
+**设计选择（明确选了，不是失败）**
+
+- 跨调用无状态——每次 `/research-report` 独立运行，不携带跨会话记忆。
+- 4 轨搜索通过 prompt 软分配，没有机械的行数门控。实际中第 3-4 轨少执行；类似 W3 的 W7 门控技术上可行，默认未启用——强行要求最低行数容易导致低质量凑数。Depth critic 在下游 flag 真实缺失。
 - 第 1 轮自我覆盖计划重做几乎必然发生，这是已知的结构性限制
 
 ---
@@ -182,6 +202,7 @@ Worker 默认使用 **Sonnet**（URL 抓取纪律更好，成本约为 Opus 的�
 
 - [Claude Code](https://claude.com/claude-code)
 - [`frontend-design` 插件](https://github.com/anthropics/claude-plugins-official)
+- [`uv`](https://docs.astral.sh/uv/)——用于安装 `research-loop-gate` CLI
 - 网络访问（用于 Web 搜索）
 
 ---
@@ -197,7 +218,8 @@ cc-research-report/
 │   │   └── SKILL.md              # 流水线编排器（第 0→1→2 步）
 │   └── research-loop/
 │       ├── SKILL.md              # worker↔critic 循环及所有机械门控
-│       └── gates.py              # W1–W6 + CM 门控 + URL 门控验证逻辑
+│       ├── gates.py              # W1–W6 + CM 门控 + URL 门控验证逻辑
+│       └── pyproject.toml        # 把 gates.py 打包成 `research-loop-gate` CLI
 ├── agents/
 │   ├── research-worker.md
 │   ├── research-critic-cm.md           # Phase A，仅 Turn 1

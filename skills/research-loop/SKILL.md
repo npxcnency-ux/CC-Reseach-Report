@@ -7,6 +7,16 @@ description: Iterative worker↔critic research loop with rigorous adversarial v
 
 Orchestrate a worker-critic loop for rigorous research. The session loading this skill executes the routing; the actual research is done by spawned `research-worker` and `research-critic` subagents.
 
+## Prerequisite
+
+This skill invokes the `research-loop-gate` CLI for mechanical draft validation (W1–W6 + coverage-matrix-drift). Install once per machine from the skill directory:
+
+```bash
+uv tool install -e <repo>/skills/research-loop
+```
+
+After install, ensure `~/.local/bin` is on `PATH` (run `uv tool update-shell` and restart shell if needed). Verify with `which research-loop-gate`.
+
 ## Preflight check
 
 This skill spawns subagents via the `Agent` tool. If `Agent` is **not** in the tool inventory of the session loading this skill — i.e. this skill was loaded from inside a subagent context, where Claude Code does not allow nested spawning — stop immediately and emit:
@@ -140,8 +150,8 @@ In other words: **cached invariants = sections from prior attempt that weren't t
         ```
 
       Save Phase 1 output as `scp_draft`. Write to `/tmp/rl-scp-t1.md` via Bash, then run Phase 1 gates:
-      - `python3 ~/.claude/skills/research-loop/gates.py w1 /tmp/rl-scp-t1.md` → PASS or redo
-      - `python3 ~/.claude/skills/research-loop/gates.py w6 /tmp/rl-scp-t1.md` → PASS or redo
+      - `research-loop-gate w1 /tmp/rl-scp-t1.md` → PASS or redo
+      - `research-loop-gate w6 /tmp/rl-scp-t1.md` → PASS or redo
 
       Phase 1 redo (max 2): no invariants to preserve (entire table regenerates).
       - W1 FAIL → redo: "Your output must begin with `## Self Coverage Plan`. Output only the SCP table, nothing else. Here is your previous attempt: [paste scp_draft]"
@@ -177,7 +187,7 @@ In other words: **cached invariants = sections from prior attempt that weren't t
       - Save the worker's returned output as the new `current_draft`.
       - **Mechanical Worker output gate (sanity check before invoking Critic)**: run W1–W6 in order. Any failure triggers redo (max 2 redos per turn). On final failure after 2 redos, manually annotate the deficiency in the Loop Summary and proceed (so the loop can continue and Critic can flag it).
 
-        **Gate invocation (Bash tool)**: before running W1, write `current_draft` to `/tmp/rl-draft-t{turn}.md` via Bash tool (one write per turn, reused across all W-checks). Each gate below runs: `python3 ~/.claude/skills/research-loop/gates.py <gate> /tmp/rl-draft-t{turn}.md [turn]`. Parse output: first line `PASS` → gate passes; first line `FAIL` → lines 2+ are violation details, use them verbatim in the redo prompt's `[list of offending...]` placeholder. Blacklist patterns and allowed values are maintained in `gates.py` — no need to apply them manually.
+        **Gate invocation (Bash tool)**: before running W1, write `current_draft` to `/tmp/rl-draft-t{turn}.md` via Bash tool (one write per turn, reused across all W-checks). Each gate below runs: `research-loop-gate <gate> /tmp/rl-draft-t{turn}.md [turn]`. Parse output: first line `PASS` → gate passes; first line `FAIL` → lines 2+ are violation details, use them verbatim in the redo prompt's `[list of offending...]` placeholder. Blacklist patterns and allowed values are maintained in `gates.py` — no need to apply them manually.
 
       **Worker redo invariant injection** (when any W check triggers redo): build a "Cached invariants from prior attempt — preserve verbatim" block by extracting from the prior Worker output:
       - Self Coverage Plan table content (Turn 1; if it existed and isn't itself the failure source)
@@ -188,23 +198,23 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       Prepend this block to the redo prompt with the standard preservation instruction (see "Turn-internal redo invariants" section above). After redo, run normalized comparison on each cached section: drift in any → another redo (counts toward max 2).
 
-        **W1 — Self Coverage Plan heading (Turn 1 only)**: `gates.py w1 /tmp/rl-draft-t{turn}.md`. (On Turn 1, Phase 2 output includes `pre_scp` verbatim, so this should trivially PASS. If `FAIL`, Worker dropped the pre-filled SCP — re-inject `pre_scp` as a cached invariant in the redo prompt.) If `FAIL` → redo with prompt: "Your previous output was rejected because it is missing the `## Self Coverage Plan` section. Include the following pre-approved SCP verbatim at the very start of your output: \n\n[paste pre_scp]\n\nHere is your previous draft for reference: \n\n[paste previous current_draft]". On final failure: prepend a stub `## Self Coverage Plan\n[Worker omitted this section despite gate; Critic should flag]` and proceed.
+        **W1 — Self Coverage Plan heading (Turn 1 only)**: `research-loop-gate w1 /tmp/rl-draft-t{turn}.md`. (On Turn 1, Phase 2 output includes `pre_scp` verbatim, so this should trivially PASS. If `FAIL`, Worker dropped the pre-filled SCP — re-inject `pre_scp` as a cached invariant in the redo prompt.) If `FAIL` → redo with prompt: "Your previous output was rejected because it is missing the `## Self Coverage Plan` section. Include the following pre-approved SCP verbatim at the very start of your output: \n\n[paste pre_scp]\n\nHere is your previous draft for reference: \n\n[paste previous current_draft]". On final failure: prepend a stub `## Self Coverage Plan\n[Worker omitted this section despite gate; Critic should flag]` and proceed.
 
-        **W2 — Rebuttals heading (Turn 2+)**: `gates.py w2 /tmp/rl-draft-t{turn}.md`. If `FAIL` → redo with: "Your previous output was rejected because it did not contain a `# Rebuttals` section. Redo this turn — you must take an explicit stance (ACCEPT/CHALLENGE/PARTIAL) on every prior Critic Issue and RD. Here is your previous draft: [paste]".
+        **W2 — Rebuttals heading (Turn 2+)**: `research-loop-gate w2 /tmp/rl-draft-t{turn}.md`. If `FAIL` → redo with: "Your previous output was rejected because it did not contain a `# Rebuttals` section. Redo this turn — you must take an explicit stance (ACCEPT/CHALLENGE/PARTIAL) on every prior Critic Issue and RD. Here is your previous draft: [paste]".
 
-        **W3 — Source URL blacklist scan (every turn)**: `gates.py w3 /tmp/rl-draft-t{turn}.md`. Blacklist patterns (bare domain root, grounding redirects, SERP URLs, placeholder strings) and exempt labels (`[领域共识]`/`[DOMAIN]`/`[INFERENCE]`/`[推断]`) are defined in `gates.py`. Violations are returned as output lines 2+.
+        **W3 — Source URL blacklist scan (every turn)**: `research-loop-gate w3 /tmp/rl-draft-t{turn}.md`. Blacklist patterns (bare domain root, grounding redirects, SERP URLs, placeholder strings) and exempt labels (`[领域共识]`/`[DOMAIN]`/`[INFERENCE]`/`[推断]`) are defined in `gates.py`. Violations are returned as output lines 2+.
 
-        If any non-exempt row hits the blacklist → redo with: "Your previous output was rejected because the following Source URLs in your Evidence Table are not valid (bare domain root, grounding redirect, SERP URL, or 'search summary' placeholder): [use lines 2+ from gates.py output verbatim]. For each, choose one: (a) replace with the actual page URL returned by WebSearch — character-for-character, no path infilling; (b) downgrade the claim to `[推断]` or `[领域共识]` with explicit scope and remove the URL; (c) if you cannot do either, drop the data point entirely (per Anti-pattern #8). Do NOT just relabel the existing URL with a different label and keep the same URL. Here is your previous draft: [paste]".
+        If any non-exempt row hits the blacklist → redo with: "Your previous output was rejected because the following Source URLs in your Evidence Table are not valid (bare domain root, grounding redirect, SERP URL, or 'search summary' placeholder): [use lines 2+ from research-loop-gate output verbatim]. For each, choose one: (a) replace with the actual page URL returned by WebSearch — character-for-character, no path infilling; (b) downgrade the claim to `[推断]` or `[领域共识]` with explicit scope and remove the URL; (c) if you cannot do either, drop the data point entirely (per Anti-pattern #8). Do NOT just relabel the existing URL with a different label and keep the same URL. Here is your previous draft: [paste]".
 
-        **W4 — Rebuttals Stance per Issue/RD (Turn 2+)**: `gates.py w4 /tmp/rl-draft-t{turn}.md {turn}`. Valid stances: `## Issue [N]:` entries → `ACCEPT|CHALLENGE|PARTIAL`; `## RD [N]:` entries → `ACCEPT (...)|REJECT (...)`. Missing or invalid stance lines are returned as output lines 2+.
+        **W4 — Rebuttals Stance per Issue/RD (Turn 2+)**: `research-loop-gate w4 /tmp/rl-draft-t{turn}.md {turn}`. Valid stances: `## Issue [N]:` entries → `ACCEPT|CHALLENGE|PARTIAL`; `## RD [N]:` entries → `ACCEPT (...)|REJECT (...)`. Missing or invalid stance lines are returned as output lines 2+.
 
-        If any sub-heading is missing the `Stance:` line OR the value doesn't match the allowed set → redo with: "Your previous output was rejected because the following Rebuttals entries are missing or malformed Stance lines: [use lines 2+ from gates.py output verbatim]. Each `## Issue [N]:` must have `- Stance: ACCEPT|CHALLENGE|PARTIAL`. Each `## RD [N]:` must have `- Stance: ACCEPT (mode)|REJECT (reason)`. Here is your previous draft: [paste]".
+        If any sub-heading is missing the `Stance:` line OR the value doesn't match the allowed set → redo with: "Your previous output was rejected because the following Rebuttals entries are missing or malformed Stance lines: [use lines 2+ from research-loop-gate output verbatim]. Each `## Issue [N]:` must have `- Stance: ACCEPT|CHALLENGE|PARTIAL`. Each `## RD [N]:` must have `- Stance: ACCEPT (mode)|REJECT (reason)`. Here is your previous draft: [paste]".
 
-        **W5 — Track B engagement count (Turn 2+)**: `gates.py w5 /tmp/rl-draft-t{turn}.md {turn}`. Counts accepted RDs (ACCEPT stances) across `# Rebuttals` and `# Revision Log`, deduplicated; total must be ≥ 2.
+        **W5 — Track B engagement count (Turn 2+)**: `research-loop-gate w5 /tmp/rl-draft-t{turn}.md {turn}`. Counts accepted RDs (ACCEPT stances) across `# Rebuttals` and `# Revision Log`, deduplicated; total must be ≥ 2.
 
         If count < 2 → redo with: "Your previous output was rejected because you engaged with fewer than 2 Critic Research Directions (Track B requires engaging at least 2 of the prior turn's RDs via INTEGRATE/CHALLENGE/EXPAND). Detected: [count from gate output] engagement(s). Add explicit engagement entries to your `# Rebuttals` and `# Revision Log` sections for the missing RDs. Here is your previous draft: [paste]".
 
-        **W6 — Self Coverage Plan sub-question count (Turn 1 only)**: `gates.py w6 /tmp/rl-draft-t{turn}.md`. (On Turn 1, Phase 1 already validated SCP row count; this should trivially PASS.) SCP table data rows must be in [5, 8] inclusive.
+        **W6 — Self Coverage Plan sub-question count (Turn 1 only)**: `research-loop-gate w6 /tmp/rl-draft-t{turn}.md`. (On Turn 1, Phase 1 already validated SCP row count; this should trivially PASS.) SCP table data rows must be in [5, 8] inclusive.
 
         If count < 5 or count > 8 → redo with: "Your previous output was rejected because the `## Self Coverage Plan` table has [N from gate output] sub-questions, but the required range is 5-8. A plan with fewer than 5 sub-questions is too coarse to act as a meaningful coverage standard; more than 8 dilutes the planning function and signals lack of synthesis. Re-issue Turn 1 with exactly 5-8 specific, verifiable sub-questions. Here is your previous draft: [paste]".
 
@@ -416,7 +426,7 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
       **Coverage Matrix drift (Python check)**:
       Write prior Critic attempt to `/tmp/rl-critic-prior-t{turn}.md` and current Critic attempt to `/tmp/rl-critic-current-t{turn}.md`, then run:
-      `python3 ~/.claude/skills/research-loop/gates.py coverage-matrix-drift /tmp/rl-critic-prior-t{turn}.md /tmp/rl-critic-current-t{turn}.md`
+      `research-loop-gate coverage-matrix-drift /tmp/rl-critic-prior-t{turn}.md /tmp/rl-critic-current-t{turn}.md`
       Compares cell values only — table alignment and whitespace differences are ignored (PASS). Any change to existing row content is FAIL; adding new rows is PASS. Output lines 2+ name the specific row/column that drifted.
 
       **All other cached sections** — apply the core comparison rule:
