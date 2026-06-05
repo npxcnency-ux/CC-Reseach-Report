@@ -214,7 +214,7 @@ In other words: **cached invariants = sections from prior attempt that weren't t
 
         If count < 2 → redo with: "Your previous output was rejected because you engaged with fewer than 2 Critic Research Directions (Track B requires engaging at least 2 of the prior turn's RDs via INTEGRATE/CHALLENGE/EXPAND). Detected: [count from gate output] engagement(s). Add explicit engagement entries to your `# Rebuttals` and `# Revision Log` sections for the missing RDs. Here is your previous draft: [paste]".
 
-        **W6 — Self Coverage Plan sub-question count (Turn 1 only)**: `research-loop-gate w6 /tmp/rl-draft-t{turn}.md`. (On Turn 1, Phase 1 already validated SCP row count; this should trivially PASS.) SCP table data rows must be in [5, 8] inclusive.
+        **W6 — Self Coverage Plan sub-question count (Turn 1 only)**: ` w6 /tmp/rl-draft-t{turn}.md`. (On Turn 1, Phase 1 already validated SCP row count; this should trivially PASS.) SCP table data rows must be in [5, 8] inclusive.
 
         If count < 5 or count > 8 → redo with: "Your previous output was rejected because the `## Self Coverage Plan` table has [N from gate output] sub-questions, but the required range is 5-8. A plan with fewer than 5 sub-questions is too coarse to act as a meaningful coverage standard; more than 8 dilutes the planning function and signals lack of synthesis. Re-issue Turn 1 with exactly 5-8 specific, verifiable sub-questions. Here is your previous draft: [paste]".
 
